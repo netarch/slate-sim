@@ -1,1 +1,1 @@
-Event driven simulator for SLATE!
+# Event driven simulator for SLATE!
