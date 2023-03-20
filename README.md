@@ -14,7 +14,7 @@ Currently available shell scripts for experiment. (You can write your own script
 - `run_high_burst_trace_6d9c26b9.sh`
 
 
-### Example script.
+### Script
 ```shell
 dir=[path to slate-sim directory]
 app="three_depth" # one_service
@@ -39,16 +39,29 @@ python3 ${dir}/simulator.py --app ${app} \
                     --routing_algorithm ${routing_algorithm} \
                     --output_dir ${output_dir}
 ```
+- base_rps: base rps for Microbenchmark experiment
+- experiment: Alibaba_trace or Microbenchmark
+- request_arrival_file: path to request_arrival_file if you want to run Alibaba_trace experiment.
+- workload: 
+  - service id if you want to run Alibaba_trace.
+  - workload name if you want to run Microbenchmark. (e.g., exp_burst_4x, exp_burst_8x)
+- load_balancer: load balancer policy. (Currently inter-cluster load balancing will also use this load balancing policy.) It does not support different load balancing polices for different services yet.
+- fixed_autoscaler: It will be removed eventually.
+- routing_algorithm: multi-cluster service routing algorithm
+  - LCLB: Local-cluster load balancing.
+  - MCLB: Multi-cluster load balancing.
+  - heuristic_TE: current service layer traffice engineering.
+- output_dir: the name of a directory to store logs. If this dir does not exist, it will automatically create this directory.
 
 
-### What you can find in the output log directory.
+### What you can find in the output log directory
 - Metadata of the experiment.
 - Latency log. (It will be used as an input to latency cdf plot.)
 - Resource provisioining trend graph.
 - Resource provisioning log.
 - Request arrival time (which is used as a final request arrival input).
 
-### How to plot latency CDF graph.
+### How to plot latency CDF graph
 ```shell
 python3 plot_cdf_new.py [latency_file_0] [latency_file_1] [latency_file_2]
 ```
