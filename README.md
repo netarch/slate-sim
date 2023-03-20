@@ -75,16 +75,14 @@ latency-three_depth-6d9c26b9-RoundRobin-LCLB-cluster_0.txt latency-three_depth-6
 #### Generating workload from Alibaba trace
 1. Clone Alibaba clusterdata trace and download the traces.
    - https://github.com/alibaba/clusterdata/tree/master/cluster-trace-microservices-v2021
-2. **MS_MCR_RT_Table** has call rate data. The call rate means the number of requests that each replica of a microservice received every minute.
+2. **MS_MCR_RT_Table** has call rate data. The call rate means the number of requests that each replica of a microservice received **every minute**.
 3. To make microservice level number of request per minute, it collapses the number of requests per minute of the entire replicas in a microservice . Then, it becomes the number of requests per minute of the microservice.
-4. Run **generate_requeset_interval_from_trace.py** num of request per minute data that we have just created at (3.) as an input argument.
-    - You can specify the base RPS(request per second) to normalize the RPS.
+4. Run `python3 generate_requeset_interval_from_trace.py --trace_file_path [path to Alibaba trace file] --target_base_rps [base_rps]`
+    `trace_file_path` is the file created by the steps from 1 to 3.
+    - You specify the base RPS(request per second) to normalize the RPS.
     - It takes XX seconds when it runs YY microservice with 10 base RPS.
     - It will write a RPS file.
-5. It still will not be used as it is. However, it will be processed one more time before it is used as a request arrival time input for a simulation experiment.
-    - Timeshifting (optional)
-    - Normalizingv (trimming the request arrival time based on the specified base RPS)
-6. Now, this request arrival time will be input to the simulator. The final request arrival time will be written as a file.
+5. The generated RPS file will not be used as it is. It will be processed one more time by `simulator.py` before it is used as a request arrival time input for a simulation experiment.
 
 #### Generating microbenchmark workload synthetically
 1. Define your own workload for microbenchmark experiment.
