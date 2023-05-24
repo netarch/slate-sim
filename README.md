@@ -119,6 +119,7 @@ MSRTQps_13.tar.gz  MSRTQps_18.tar.gz  MSRTQps_22.tar.gz  MSRTQps_4.tar.gz   MSRT
 It reads MSRTQps_\*.csv, merges all of them to one file and sorts by ["msname", "timestamp"].
 
 - Output format
+
 |   | timestamp | msname                                                           | msinstanceid                                                     | metric            | value               |
 |---|-----------|------------------------------------------------------------------|-----------------------------------------------------------------|-------------------|---------------------|
 | 0 | 360000    | af5d63e40f2bc053c32d2b51ba6ca28739e93661fd816b61e1d2e90736c9643f | 5cb6ebc2cd245149dc4f7d36bca956f912554e8a0e17a79b05e2f59939919d82 | consumerRPC_MCR   | 17.7                |
