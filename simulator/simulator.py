@@ -2948,27 +2948,26 @@ def create_request_arrival_time_from_cached_file(request_arrival_file, flags):
     for i in range(len(lines)):
         request_arrival.append(float(lines[i]))
     # print("req_arr_time", request_arrival)
-    # print()
-
-    print("request_arrival[-1]: ", request_arrival[-1])
+    # print("request_arrival[-1]: ", request_arrival[-1])
 
 
-    def divide_req_arr_into_two_randomly(req_arr):
-        # req_arr_0 =  set(random.sample(req_arr, len(req_arr)/2))
-        # req_arr_1 = req_arr - req_arr_0
-        deepcopied_req_arr = copy.deepcopy(req_arr)
-        random.shuffle(deepcopied_req_arr)
-        half = int(len(deepcopied_req_arr)/2)
-        req_arr_0 = deepcopied_req_arr[:half]
-        req_arr_1 = deepcopied_req_arr[half:]
-        req_arr_0.sort()
-        req_arr_1.sort()
-        print("len(req_arr): ", len(req_arr))
-        print("len(req_arr_0): ", len(req_arr_0))
-        print("len(req_arr_1): ", len(req_arr_1))
-        return req_arr_0, req_arr_1
-
+    # DEPRECATED
+    # def divide_req_arr_into_two_randomly(req_arr):
+    #     # req_arr_0 =  set(random.sample(req_arr, len(req_arr)/2))
+    #     # req_arr_1 = req_arr - req_arr_0
+    #     deepcopied_req_arr = copy.deepcopy(req_arr)
+    #     random.shuffle(deepcopied_req_arr)
+    #     half = int(len(deepcopied_req_arr)/2)
+    #     req_arr_0 = deepcopied_req_arr[:half]
+    #     req_arr_1 = deepcopied_req_arr[half:]
+    #     req_arr_0.sort()
+    #     req_arr_1.sort()
+    #     print("len(req_arr): ", len(req_arr))
+    #     print("len(req_arr_0): ", len(req_arr_0))
+    #     print("len(req_arr_1): ", len(req_arr_1))
+    #     return req_arr_0, req_arr_1
     # request_arrivals_0, request_arrivals_1 = divide_req_arr_into_two_randomly(request_arrival)
+    
     req_arr_0 = copy.deepcopy(request_arrival)
     req_arr_1 = copy.deepcopy(request_arrival)
 
@@ -3013,6 +3012,7 @@ def create_request_arrival_time_from_cached_file(request_arrival_file, flags):
     def thin_the_request_arrival_list(req_arr, target_rps):
         def calc_norm_factor(request_arr, target_base_rps):
             rps_list = extract_rps_from_request_arrival(request_arr)
+            # TODO: Hardcoded. Apparently, 2 percentile is not p50.
             p50_rps = np.percentile(rps_list, 2)
             norm_weight = p50_rps/target_base_rps
             print("target_base_rps: ", target_base_rps)
