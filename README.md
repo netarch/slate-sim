@@ -168,6 +168,8 @@ Now we will collapse `msinstanceid` and leave msname only by summing up all `pro
 - percentile columns and `max/min`, `max/p1` columns stands for the variance between different instances (replicas) of the same service **in the same timestampe**.
 - In later analyzer and parser, **`sum`** column will be used as MCR of each timestamp.
 
+
+
 ## Workload generation process
 ### Generating workload from Alibaba trace
 1. Clone Alibaba clusterdata trace and download the traces.
