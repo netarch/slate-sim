@@ -115,7 +115,7 @@ MSRTQps_13.tar.gz  MSRTQps_18.tar.gz  MSRTQps_22.tar.gz  MSRTQps_4.tar.gz   MSRT
 | 6 | 60000     | af5d63e40f2bc053c32d2b51ba6ca28739e93661fd816b61e1d2e90736c9643f | d95f2fe4b1c361fc24cbe6bd7629fcae3098bd60a4065518e96453169de11314 | providerRPC_MCR   | 6.15                |
 | 7 | 1140000   | af5d63e40f2bc053c32d2b51ba
 
-### extract_and_merge_provider_rpc_mcr.ipynb
+### extract_and_merge_provider_rpc_mcr.ipynb (Optional, not necessary step)
 It reads MSRTQps_\*.csv, merges all of them to one file and sorts by ["msname", "timestamp"].
 
 - Output format
@@ -131,10 +131,42 @@ It reads MSRTQps_\*.csv, merges all of them to one file and sorts by ["msname", 
 | 6 | 0         | 002251d4123496684687c2acad43bdef9419a5e4fc01a65d2c558af92a5ad649 | 48c3618015c6904799d0f0048ccbd6a53a526bb1f5059ca97d7986855ae2d2a4 | providerRPC_MCR | 42.63333333333333 |
 | 7 | 0         | 002251d4123496684687c2acad43bdef9419a5e4fc01a65d2c558af92a5ad649 | d4268912905166dd3818345010fc515
 
-
+Now we will collapse `msinstanceid` and leave msname only by summing up all `providerRPC_MCR` value within the same timestamp.
 
 ### parse_provider_rpc_mcr.py
-Read all MSRTQps_\*.csv files. Filter `providerRPC_MCR` column only and merge them into one file. The output 
+- Input: MSRTQps_\*.csv file
+- Parsing step
+1. Read MSRTQps_i.csv files.
+2. Filter a service name in the `msname` column. Let's name the output MSRTQps_i_svc
+3. Filter `providerRPC_MCR` in the `metric` column.
+4. for each timestamp in `timestamp` column.
+    1. Filter the timestamp. (_now we have a single provideRPC_MCR value at timestamp t_)
+    2. Append this value to the list
+    Now each data structure has `providerRPC_MCR` of one service sorted by timestamp.
+    ```python
+    dictionary
+    { service A : [ MCR value at t=0, MCR value at t=1, ... ] },
+    { service B : [ MCR value at t=0, MCR value at t=1, ... ] },
+    ...
+    ```
+5. Get statistics of each service's MCR list.
+
+- Output
+
+|    | msname                                                           | timestamp | num |      sum |      avg |     std | min |    max | max/min | max/p1 |   p0.1 |      p1 |      p5 |     p10 |      p25 |      p50 |      p75 |     p90 |      p95 |      p99 |    p99.9 |
+|---:|:-----------------------------------------------------------------|-----------|-----:|---------:|---------:|--------:|----:|-------:|--------:|-------:|-------:|--------:|--------:|--------:|---------:|---------:|---------:|--------:|---------:|---------:|---------:|
+|  0 | 002251d4123496684687c2acad43bdef9419a5e4fc01a65d2c558af92a5ad649 |          0 | 437 | 18437.87 | 42.19191 | 2.168923 |   0 | 45.117 |     inf | 1.11823 | 17.4618 | 40.3467 |   40.98 |    41.3 | 41.76667 | 42.23333 | 42.81667 | 43.32333 | 43.57333 | 44.094   |
+|  1 | 002251d4123496684687c2acad43bdef9419a5e4fc01a65d2c558af92a5ad649 |     60000 | 437 | 18787.08 | 42.99104 | 2.232557 |   0 | 46.317 |     inf | 1.12813 | 17.4763 | 41.056  |   41.747 |    42.02 |     42.5 |    43.05 |    43.65 | 44.18333 |     44.59 | 45.232   |
+|  2 | 002251d4123496684687c2acad43bdef9419a5e4fc01a65d2c558af92a5ad649 |    120000 | 437 | 18893.15 | 43.23375 | 2.244835 |   0 | 45.717 |     inf | 1.10544 | 17.9269 | 41.356  |   41.947 |    42.24 |     42.7 | 43.33333 | 43.91667 | 44.46667 | 44.82667 | 45.16667 |
+|  3 | 002251d4123496684687c2acad43bdef9419a5e4fc01a65d2c558af92a5ad649 |    180000 | 437 | 18877.18 | 43.19722 | 2.225311 |   0 | 45.717 |     inf | 1.10262 | 17.9196 | 41.462  |   41.883 |    42.27 |     42.7 |      43.3 |    43.87 | 44.28333 | 44.62333 | 45.31667 |
+|  4 | 002251d4123496684687c2acad43bdef9419a5e4fc01a65d2c558af92a5ad649 |    240000 | 437 | 18976.15 | 43.42368 | 2.223884 |   0 | 45.45  |     inf | 1.09267 | 17.9777 | 41.5953 |   42.23  |    42.48 |     42.98 |     43.53 |     44.1 |    44.51667 | 44.75    |
+|  5 | 002251d4123496684687c2acad43bdef9419a5e4fc01a65d2c558af92a5ad649 |    300000 | 437 | 19139.48 | 43.79744 | 2.257042 |   0 | 46.067 |     inf | 1.10278 | 18.0068 | 41.7733 |   42.513 |    42.79 |     43.28 |     43.98 |     44.47 |     44.95 | 45.20333 | 45.734   |
+|  6 | 002251d4123496684687c2acad43bdef9419a5e4fc01a65d2c558af92a5ad649 |    360000 | 437 | 19241.37 | 44.03059 | 2.300797 |   0 | 46.6   |     inf | 1.11286 | 18.0722 | 41.874  |   42.58  |    42.87 |    43.55 | 44.13333 |     44.77 |    45.247 | 45.55667 | 46.16667 |
+|  7 | 002251d4123496684687c2acad43bdef9419a5e4fc01a65d2c558af92a5ad649 |    420000 | 437 | 19393.55 | 44.37883 | 2.288714 |   0 | 47.35  |     inf | 1.12622 | 18.1231 | 42.0433 |   43.097 |    43.41 |    43.92 | 44.48333 |    45.117 |    45.49 |    45.8   | 46.308   |
+|  8 | 002251d4123496684687c2acad43bdef9419a5e4fc01a65d2c558af92a5ad649 |    480000 | 437 | 194       | 44.38    | 2.288714 |   0 | 47.35  |     inf | 1.12622 | 18.1231 | 42.0433 |   43.097 |    43.41 |    43.92 | 44.48333 |    45.117 |    45.49 |    45.8   | 46.308   |
+
+- percentile columns and `max/min`, `max/p1` columns stands for the variance between different instances (replicas) of the same service **in the same timestampe**.
+- In later analyzer and parser, **`sum`** column will be used as MCR of each timestamp.
 
 ## Workload generation process
 ### Generating workload from Alibaba trace
