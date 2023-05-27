@@ -1,4 +1,8 @@
-from utils import *
+import time
+import sys
+import numpy as np
+sys.path.append("/srv/scratch/gangmuk2/clusterdata_with_parser/cluster-trace-microservices-v2021/data/MSRTQps/csv_files/slate-sim/simulator")
+from utils import utils
 
 class WorkloadGenerator:
     def __init__ (self, req_per_sec, total_sec):
@@ -7,14 +11,14 @@ class WorkloadGenerator:
         self.total_num_req = self.request_per_sec * self.total_seconds
         # TODO:
         # assert (self.total_num_req - int(self.total_num_req)) == 0
-        print_log("DEBUG", "self.total_num_req: " + str(self.total_num_req))
+        utils.print_log("DEBUG", "self.total_num_req: " + str(self.total_num_req))
         self.total_num_req = int(self.total_num_req)
 
     def exponential_distribution(self):
         # scale_ = (1 / self.request_per_sec) * 1000 # millisecond
         scale_ = (1 / self.request_per_sec) # scale parameter is the inverse of the rate parameter \lambda
-        print_log("DEBUG", "total_num_req: " + str(self.total_num_req))
-        print_log("DEBUG", "scale: " + str(scale_))
+        utils.print_log("DEBUG", "total_num_req: " + str(self.total_num_req))
+        utils.print_log("DEBUG", "scale: " + str(scale_))
         
         ts = time.time()
         exp_dist=np.random.exponential(scale=scale_, size=(self.total_num_req))
@@ -32,32 +36,32 @@ class WorkloadGenerator:
         # norm_exp_dist.insert(0, first_request_start_time) # For the very first event, 0 second event arrival is inserted.
         
         
-        print_log("DEBUG", "")
-        print_log("DEBUG", "="*40)
-        print_log("DEBUG", "== Exponential workload statistics ==")
-        print_log("DEBUG", "="*40)
-        print_log("DEBUG", "- total num requests: {}".format(self.total_num_req))
-        print_log("DEBUG", "- sum: {}".format(sum(norm_exp_dist)))
-        print_log("DEBUG", "- mean interval: {}".format(sum(norm_exp_dist)/len(norm_exp_dist)))
-        print_log("DEBUG", "- max interval: {}".format(max(norm_exp_dist)))
-        print_log("DEBUG", "- min interval: {}".format(min(norm_exp_dist)))
-        print_log("DEBUG", "="*40)
+        utils.print_log("DEBUG", "")
+        utils.print_log("DEBUG", "="*40)
+        utils.print_log("DEBUG", "== Exponential workload statistics ==")
+        utils.print_log("DEBUG", "="*40)
+        utils.print_log("DEBUG", "- total num requests: {}".format(self.total_num_req))
+        utils.print_log("DEBUG", "- sum: {}".format(sum(norm_exp_dist)))
+        utils.print_log("DEBUG", "- mean interval: {}".format(sum(norm_exp_dist)/len(norm_exp_dist)))
+        utils.print_log("DEBUG", "- max interval: {}".format(max(norm_exp_dist)))
+        utils.print_log("DEBUG", "- min interval: {}".format(min(norm_exp_dist)))
+        utils.print_log("DEBUG", "="*40)
         return norm_exp_dist
     
     def constant_distribution(self):
-        print_log("DEBUG", "total_num_req: ", self.total_num_req)
+        utils.print_log("DEBUG", "total_num_req: ", self.total_num_req)
         dist = [(self.total_seconds/self.total_num_req) * 1000] * self.total_num_req
-        print_log("DEBUG", dist)
-        print_log("DEBUG", "")
-        print_log("DEBUG", "="*40)
-        print_log("DEBUG", "== Constant workload statistics ==")
-        print_log("DEBUG", "="*40)
-        print_log("DEBUG", "- total num requests: {}".format(self.total_num_req))
-        print_log("DEBUG", "- sum: {}".format(sum(dist)))
-        print_log("DEBUG", "- mean interval: {}".format(sum(dist)/len(dist)))
-        print_log("DEBUG", "- max interval: {}".format(max(dist)))
-        print_log("DEBUG", "- min interval: {}".format(min(dist)))
-        print_log("DEBUG", "="*40)
+        utils.print_log("DEBUG", dist)
+        utils.print_log("DEBUG", "")
+        utils.print_log("DEBUG", "="*40)
+        utils.print_log("DEBUG", "== Constant workload statistics ==")
+        utils.print_log("DEBUG", "="*40)
+        utils.print_log("DEBUG", "- total num requests: {}".format(self.total_num_req))
+        utils.print_log("DEBUG", "- sum: {}".format(sum(dist)))
+        utils.print_log("DEBUG", "- mean interval: {}".format(sum(dist)/len(dist)))
+        utils.print_log("DEBUG", "- max interval: {}".format(max(dist)))
+        utils.print_log("DEBUG", "- min interval: {}".format(min(dist)))
+        utils.print_log("DEBUG", "="*40)
         return dist
     
 def interval_to_arrival(req_intv):
@@ -230,7 +234,7 @@ def generate_workload(scenario_, base_rps):
     elif scenario_ == "empty":
         return [0]
     else:
-        print_log("ERROR", "Workload scenario " + str(scenario_) + " is not supported.")
+        utils.print_log("ERROR", "Workload scenario " + str(scenario_) + " is not supported.")
     
     request_arrivals = interval_to_arrival(request_interval_list)
     return request_arrivals
