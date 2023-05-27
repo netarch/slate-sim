@@ -8,6 +8,10 @@ from matplotlib import colors as mcolors
 import random
 import sys
 
+LCLB = "Local Load Balancing"
+MCLB = "Multi-Cluster Load Balancing"
+TE = "Service Layer TE"
+
 ##########################################################################################
 ''' Marker list '''
 marker_list = ['d', 'o', 'x', 'v', '^', '<', '>', 's', '8', 'p']
@@ -28,50 +32,54 @@ for name in color_dict:
 line_style_list = ["solid", "dashdot", "dashed", 'dotted']
 ##########################################################################################
 
-def plot_cdf(latency_dict_, title, path):
+
+def plot_latency_cdf(latency_dict_, cluster_name, path):
     fig = plt.figure()
-    def cdf(dict_):
-        color_idx = 0
-        ls_idx = 0
-        for key in dict_:
-            x_0 = np.sort(dict_[key])
-            num_data_point_0 = len(dict_[key])
-            y_0 = np.arange(num_data_point_0) / float(num_data_point_0)
-            plt.plot(x_0, y_0, label=key, color=color_list[color_idx], linewidth=lw, linestyle=line_style_list[ls_idx])
-            color_idx += 1
-            ls_idx += 1
-            
-    def tail_cdf(dict_):
-        def find_tail_idx(data, tail):
-            tail_idx = 0
-            for i in range(len(data)):
-                if data[i] >= 0.95:
-                    tail_idx = i
-                    break
-            print("{}, tail_idx: {}".format("???", tail_idx))
-            return tail_idx
-        color_idx = 0
-        ls_idx = 0
-        for key in dict_:
-            num_data_point_0 = len(dict_[key])
-            y_0 = np.arange(num_data_point_0) / float(num_data_point_0)
-            tail = 0.95
-            tail_idx = find_tail_idx(y_0, tail)
-            y_tail = y_0[tail_idx:]
-            x_0 = np.sort(dict_[key])
-            x_tail = x_0[tail_idx:]
-            plt.plot(x_tail, y_tail, label=key, color=color_list[color_idx], linewidth=lw, linestyle=line_style_list[ls_idx])
-            color_idx += 1
-            ls_idx += 1
-            
-    LCLB = "Local Load Balancing"
-    MCLB = "Multi-Cluster Load Balancing"
-    TE = "Service Layer TE"
+    color_idx = 0
+    ls_idx = 0
+    for key in latency_dict_:
+        x_0 = np.sort(latency_dict_[key])
+        num_data_point_0 = len(latency_dict_[key])
+        y_0 = np.arange(num_data_point_0) / float(num_data_point_0)
+        plt.plot(x_0, y_0, label=key, color=color_list[color_idx], linewidth=lw, linestyle=line_style_list[ls_idx])
+        color_idx += 1
+        ls_idx += 1
+    # plt.title("cluster", fontsize=30)
+    plt.xlim(0, )
+    plt.xlabel('Request latency(ms)', fontsize=30)
+    plt.ylabel('CDF', fontsize=25)
+    # plt.legend(loc="lower right", fontsize=14, frameon = False)
+    plt.legend(loc="lower right", fontsize=16)
+    plt.xticks(fontsize=20, rotation=45)
+    plt.yticks(fontsize=20)
+    plt.savefig(path+cluster_name+"-latency_cdf.pdf", dpi=100, bbox_inches='tight')
+    plt.show()
+    plt.close(fig)
     
-    ## Plot bursty cluster
-    tail_cdf(latency_dict)
-    # cdf(latency_dict_)
-    
+
+def plot_tail_latency_cdf(latency_dict_, cluster_name, path):
+    fig = plt.figure()     
+    def find_tail_idx(data, tail):
+        tail_idx = 0
+        for i in range(len(data)):
+            if data[i] >= 0.95:
+                tail_idx = i
+                break
+        print("{}, tail_idx: {}".format("???", tail_idx))
+        return tail_idx
+    color_idx = 0
+    ls_idx = 0
+    for key in latency_dict_:
+        num_data_point_0 = len(latency_dict_[key])
+        y_0 = np.arange(num_data_point_0) / float(num_data_point_0)
+        tail = 0.95
+        tail_idx = find_tail_idx(y_0, tail)
+        y_tail = y_0[tail_idx:]
+        x_0 = np.sort(latency_dict_[key])
+        x_tail = x_0[tail_idx:]
+        plt.plot(x_tail, y_tail, label=key, color=color_list[color_idx], linewidth=lw, linestyle=line_style_list[ls_idx])
+        color_idx += 1
+        ls_idx += 1
     # plt.title("Bursty cluster", fontsize=30)
     plt.xlim(0, )
     plt.xlabel('Request latency(ms)', fontsize=30)
@@ -80,7 +88,7 @@ def plot_cdf(latency_dict_, title, path):
     plt.legend(loc="lower right", fontsize=16)
     plt.xticks(fontsize=20, rotation=45)
     plt.yticks(fontsize=20)
-    # plt.savefig(path+"latency_cdf_bursty.pdf", dpi=100, bbox_inches='tight')
+    plt.savefig(path+cluster_name+"-tail_latency_cdf.pdf", dpi=100, bbox_inches='tight')
     plt.show()
     plt.close(fig)
 
@@ -93,7 +101,7 @@ def parse_file(li):
     RoundRobin
     LCLB
     '''
-    cluster_id = li.pop(0).strip()
+    cluster_name = li.pop(0).strip()
     app = li.pop(0).strip()
     wrk = li.pop(0).strip()
     lb = li.pop(0).strip()
@@ -102,26 +110,14 @@ def parse_file(li):
     for elem in li:
         latency.append(float(elem.strip()))
     print("="*15)
-    print(cluster_id)
+    print(cluster_name)
     print(app)
     print(wrk)
     print(lb)
     print(routing_algorithm)
     print("="*15)
-    return latency, cluster_id, app, wrk, lb, routing_algorithm
+    return latency, cluster_name, app, wrk, lb, routing_algorithm
 
-
-def generate_dictionary_key(cluster_id, lb, routing_algorithm):
-    key = cluster_id + "-" + routing_algorithm + "-" + lb
-    return key
-
-
-def mapping(data, latency_dict_):
-    latency, cluster_id, app, wrk, lb, routing_algorithm = parse_file(data)
-    key = generate_dictionary_key(cluster_id, lb, routing_algorithm)
-    assert key not in latency_dict_
-    latency_dict_[key] = latency
-    
 
 def print_statistics(latency_dict_):
     for key in latency_dict_:
@@ -137,18 +133,29 @@ def print_statistics(latency_dict_):
 
 if __name__ == "__main__":
     file_list = list(sys.argv[1:])
-    print("file_list: ", file_list)
+    # print("file_list: ", file_list)
     for fname in file_list:
-        assert fname.split(".")[-1] == "txt" and fname.split("-")[0] == "latency"
-    
+        try:
+            assert fname.split(".")[-1] == "txt" and fname.split("/")[-1].split("-")[0] == "latency"
+        except:
+            print("invalid file name: {}".format(fname))
+            exit()
     latency_dict = dict()
     for fname in file_list:
         file_ = open(fname, 'r')
         data = file_.readlines()
-        mapping(data, latency_dict)
+        latency, cluster_name, app, wrk, lb, routing_algorithm = parse_file(data)
+        key = cluster_name + "-" + routing_algorithm + "-" + lb
+        try:
+            assert key not in latency_dict
+        except:
+            print("key already exists in latency_dict_: {}".format(key))
+            exit()
+        latency_dict[key] = latency
     
     ## PLOT CDF
-    plot_cdf(latency_dict, title="Latencty CDF", path="./")
+    plot_latency_cdf(latency_dict, cluster_name, path="./")
+    plot_tail_latency_cdf(latency_dict, cluster_name, path="./")
     
     ## PRINT STATISTICS
     print_statistics(latency_dict)
