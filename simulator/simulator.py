@@ -12,7 +12,7 @@ from queue import Queue
 import random
 from time import gmtime, strftime
 from utils import *
-import workload_generator as wrk_g
+from workload_generator import workload_generator as wrk_g
 
 np.random.seed(1234)
 
@@ -1412,9 +1412,21 @@ class Replica:
     
 
 class Simulator:
-    def __init__(self, req_arrival_0, req_arrival_1, app, cur_time, req_arr_0, req_arr_1, arg_flags):
-        assert len(req_arrival_0) > 0
-        assert len(req_arrival_1) > 0
+    def __init__(self, req_arr_0, req_arr_1, app, cur_time, arg_flags):
+        self.request_arr_0 = req_arr_0
+        self.request_arr_1 = req_arr_1
+        self.app = app
+        self.cur_time = cur_time
+        self.arg_flags = arg_flags
+        assert len(self.request_arr_0) > 0
+        assert len(self.request_arr_1) > 0
+        self.first_time_flag = True
+        self.user0_num_req = len(self.request_arr_0)
+        self.user1_num_req = len(self.request_arr_1)
+        self.total_num_req = len(self.request_arr_0) + len(self.request_arr_1)
+        print_log("DEBUG", "user0 num_req: " + str(self.user0_num_req))
+        print_log("DEBUG", "user1 num_req: " + str(self.user1_num_req))
+        print_log("DEBUG", "total num_req: " + str(self.total_num_req))
         self.current_time = 0
         self.event_queue = list()
         heapq.heapify(self.event_queue)
@@ -1423,15 +1435,12 @@ class Simulator:
         self.end_to_end_latency = dict() # key: request, value: latency
         self.user0_latency = list()
         self.user1_latency = list()
-        
         self.cluster0_service_latency = dict()
         for service in dag.all_service:
             self.cluster0_service_latency[service] = dict()
-            
         self.cluster1_service_latency = dict()
         for service in dag.all_service:
             self.cluster1_service_latency[service] = dict()
-            
         self.cluster0_capacity = dict()
         self.cluster1_capacity = dict()
         self.cluster0_autoscaling_timestamp = dict()
@@ -1443,19 +1452,6 @@ class Simulator:
         create_key_with_service(self.cluster1_capacity)
         create_key_with_service(self.cluster0_autoscaling_timestamp)
         create_key_with_service(self.cluster1_autoscaling_timestamp)
-        
-        self.user0_num_req = len(req_arrival_0)
-        self.user1_num_req = len(req_arrival_1)
-        self.total_num_req = len(req_arrival_0) + len(req_arrival_1)
-        print_log("DEBUG", "user0 num_req: " + str(self.user0_num_req))
-        print_log("DEBUG", "user1 num_req: " + str(self.user1_num_req))
-        print_log("DEBUG", "total num_req: " + str(self.total_num_req))
-        self.first_time_flag = True
-        self.app = app
-        self.cur_time = cur_time
-        self.request_arr_0 = req_arr_0
-        self.request_arr_1 = req_arr_1
-        self.arg_flags = arg_flags
         
     def get_latency(self, cluster_id):
         if cluster_id == 0:
@@ -1473,7 +1469,6 @@ class Simulator:
         l_li = list(self.end_to_end_latency.values())
         print_percentiles(l_li)
         # p = ", processing time: 10ms"
-        
         if len(self.user0_latency) > 0:
             u0_latency_record_time = [ x[0] for x in self.user0_latency ]
             u0_latency = self.get_latency(cluster_id = 0)
@@ -1482,7 +1477,6 @@ class Simulator:
             print_log("DEBUG", "* User group 0 latency summary *")
             print_percentiles(u0_latency)
             print_log("DEBUG", "len(u0_latency): " +str(len(u0_latency)))
-        
         if len(self.user1_latency) > 0:
             u1_latency_record_time = [ x[0] for x in self.user1_latency ]
             u1_latency = self.get_latency(cluster_id = 1)
@@ -2947,27 +2941,6 @@ def create_request_arrival_time_from_cached_file(request_arrival_file, flags):
     request_arrival = list()
     for i in range(len(lines)):
         request_arrival.append(float(lines[i]))
-    # print("req_arr_time", request_arrival)
-    # print("request_arrival[-1]: ", request_arrival[-1])
-
-
-    # DEPRECATED
-    # def divide_req_arr_into_two_randomly(req_arr):
-    #     # req_arr_0 =  set(random.sample(req_arr, len(req_arr)/2))
-    #     # req_arr_1 = req_arr - req_arr_0
-    #     deepcopied_req_arr = copy.deepcopy(req_arr)
-    #     random.shuffle(deepcopied_req_arr)
-    #     half = int(len(deepcopied_req_arr)/2)
-    #     req_arr_0 = deepcopied_req_arr[:half]
-    #     req_arr_1 = deepcopied_req_arr[half:]
-    #     req_arr_0.sort()
-    #     req_arr_1.sort()
-    #     print("len(req_arr): ", len(req_arr))
-    #     print("len(req_arr_0): ", len(req_arr_0))
-    #     print("len(req_arr_1): ", len(req_arr_1))
-    #     return req_arr_0, req_arr_1
-    # request_arrivals_0, request_arrivals_1 = divide_req_arr_into_two_randomly(request_arrival)
-    
     req_arr_0 = copy.deepcopy(request_arrival)
     req_arr_1 = copy.deepcopy(request_arrival)
 
@@ -3067,7 +3040,14 @@ def create_request_arrival_time_from_cached_file(request_arrival_file, flags):
     print("init_num_repl_cluster_1: ", init_num_repl_cluster_1)
     return request_arrivals_0, request_arrivals_1, init_num_repl_cluster_0, init_num_repl_cluster_1
     
-    
+''' Check configuration '''
+def check_flags(flags):
+    if flags.experiment == "Alibaba_trace":
+        assert flags.request_arrival_file != None
+        if flags.request_arrival_file.find(flags.workload) == -1:
+            print_log("ERROR", "request_arrival_file and workload(msname) are not consistent. ({} // {})".format(flags.request_arrival_file, flags.workload))
+            
+            
 if __name__ == "__main__":
     program_start_time = time.time()
     cur_time = strftime("%Y%m%d_%H%M%S", gmtime())
@@ -3091,18 +3071,11 @@ if __name__ == "__main__":
     close_inter_region = flags.close_inter_region_network_latency
     far_inter_region = flags.far_inter_region_network_latency
     network_latency = NetworkLatency(same_rack, inter_rack, inter_zone, close_inter_region, far_inter_region)
-    # network_latency = NetworkLatency(0, 0.5, 2, 15, 40)
     
-    ''' Check configuration '''
-    def check_flags(flags):
-        if flags.experiment == "Alibaba_trace":
-            assert flags.request_arrival_file != None
-            if flags.request_arrival_file.find(flags.workload) == -1:
-                print_log("ERROR", "request_arrival_file and workload(msname) are not consistent. ({} // {})".format(flags.request_arrival_file, flags.workload))
+    ''' check argparse flags'''
     check_flags(flags)
     
     ''' Worklaod distribution '''
-    ## Microbenchmark (synthesized workload distribution)
     if flags.experiment == "Microbenchmark":
         workload_0 = flags.workload
         if workload_0 == "exp_burst_8x":
@@ -3162,7 +3135,7 @@ if __name__ == "__main__":
     placement.print()
     # ym1 = plot_workload_histogram_2(request_arrivals_0, "Cluster 0 - Workload distribution", 0)
     # ym2 = plot_workload_histogram_2(request_arrivals_1, "Cluster 1 - Workload distribution", ym1)
-    simulator = Simulator(request_arrivals_0, request_arrivals_1, flags.app, cur_time, request_arrivals_0, request_arrivals_1, flags)
+    simulator = Simulator(request_arrivals_0, request_arrivals_1, flags.app, cur_time, flags)
     req_id = 0
     origin_cluster_0 = 0
     for req_arr in request_arrivals_0:
