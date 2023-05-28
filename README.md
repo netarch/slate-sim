@@ -71,7 +71,7 @@ python3 plot_cdf_new.py
 latency-three_depth-6d9c26b9-RoundRobin-LCLB-cluster_0.txt latency-three_depth-6d9c26b9-RoundRobin-MCLB-cluster_0.txt latency-three_depth-6d9c26b9-RoundRobin-heuristic_TE-cluster_0.txt
 ```
 
-## Alibaba dataset structure
+## Alibaba dataset
 There are six different categories of cluster trace in alibaba cluster data. What we need for `slate-sim` is in **`cluster-trace-microservices-v2021`**.
 ```shell
 drwxrwxr-x 7 gangmuk2 gangmuk2 4.0K Jan  6 21:09 cluster-trace-gpu-v2020
