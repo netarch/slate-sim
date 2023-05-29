@@ -12,8 +12,6 @@ from queue import Queue
 import random
 import time
 from utils import utils
-from workload_generator import workload_generator as wrk_g
-from plot import plot_latency_cdf
 
 np.random.seed(1234)
 
@@ -2905,24 +2903,33 @@ def three_depth_application(load_balancer):
 
 def argparse_add_argument(parser):
     parser.add_argument("--app", type=str, default=None, help="the name of the target app", choices=["one_service", "three_depth"], required=True)
+    
     parser.add_argument("--load_balancer", type=str, default=None, help="load balancing policy", choices=["Random", "RoundRobin", "LeastRequest", "MovingAvg", "EWMA"], required=True)
+    
     parser.add_argument("--routing_algorithm", type=str, default=None, choices=["LCLB", "MCLB", "heuristic_TE", "moment_response_time"], help="routing algorithm when multi-cluster is enabled.", required=True)
-    parser.add_argument("--experiment", type=str, default=None, choices=["Microbenchmark", "Alibaba_trace"], help="workload type", required=False)
-    parser.add_argument("--request_arrival_file", type=str, default=None, help="path to the cahced request arrival time file", required=False)
+    
+    parser.add_argument("--c0_request_arrival_file", type=str, default=None, help="path to the cluster 0 request arrival time file", required=True)
+    
+    parser.add_argument("--c1_request_arrival_file", type=str, default=None, help="path to the cluster 1 request arrival time file", required=True)
+    
     parser.add_argument("--workload", type=str, default=None, help="workload type or msname", required=True)
-    parser.add_argument("--base_rps", type=int, default=None, help="base request per second", required=True)
+    
     parser.add_argument("--fixed_autoscaler", type=int, default=None, choices=[0, 1], help="fixed autoscaler", required=True)
-    parser.add_argument("--timeshift", type=int, default=0, help="path to the target call rate trace file", required=False)
+    
+    parser.add_argument("--output_dir", type=str, default="log", help="base directory where output log will be written.", required=True)
+    
     parser.add_argument("--response_time_window_size", type=int, default=200, help="window size of response time for moving average and ewma", required=False)
     
-    # network_latency = NetworkLatency(0, 0.5, 2, 15, 40)
     parser.add_argument("--same_rack_network_latency", type=float, default=0, help="same_rack_network_latency cluster", required=False)
+    
     parser.add_argument("--inter_rack_network_latency", type=float, default=0.5, help="inter_rack_network_latency cluster", required=False)
+    
     parser.add_argument("--inter_zone_network_latency", type=float, default=2, help="inter_zone_network_latency cluster", required=False)
+    
     parser.add_argument("--close_inter_region_network_latency", type=float, default=15, help="close_inter_region_network_latency cluster", required=False)
+    
     parser.add_argument("--far_inter_region_network_latency", type=float, default=40, help="far_inter_region_network_latency cluster", required=False)
     
-    parser.add_argument("--output_dir", type=str, default="log", help="base directory where output log will be written.")
     
     
 def print_argument(flags):
@@ -2933,122 +2940,13 @@ def print_argument(flags):
         utils.print_log("INFO", "{}: {}".format(key, str(value)))
     utils.print_log("INFO", "=============================================================")
 
-
-def create_request_arrival_time_from_cached_file(request_arrival_file, flags):
-    assert request_arrival_file != None
-    file1 = open(request_arrival_file, 'r')
-    lines = file1.readlines()
-    file1.close()
-    request_arrival = list()
-    for i in range(len(lines)):
-        request_arrival.append(float(lines[i]))
-    req_arr_0 = copy.deepcopy(request_arrival)
-    req_arr_1 = copy.deepcopy(request_arrival)
-
-    def timeshift(req_arr_0, req_arr_1, hour):
-        temp_0 = list()
-        temp_1 = list()
-        for elem in req_arr_0:
-            if elem < hour*1000:
-                # req_arr_0.remove(elem)
-                a=1
-            else:
-                temp_0.append(elem)
-        last_arr = req_arr_1[-1]
-        for elem in req_arr_1:
-            if elem > last_arr - hour*1000:
-                a=1
-                # req_arr_1.remove(elem)
-            else:
-                temp_1.append(elem)
-        # timeshifted_req_arr_0 = [x-req_arr_0[0] for x in req_arr_0]
-        # timeshifted_req_arr_1 = [x-req_arr_1[0] for x in req_arr_1]
-        timeshifted_req_arr_0 = [x-temp_0[0] for x in temp_0]
-        timeshifted_req_arr_1 = [x-temp_1[0] for x in temp_1]
-        return timeshifted_req_arr_0, timeshifted_req_arr_1
-
-    if flags.timeshift == 1:
-        timeshift_by = 3600
-        req_arr_0, req_arr_1 = timeshift(req_arr_0, req_arr_1, timeshift_by)
-
-    def extract_rps_from_request_arrival(li):
-        rps_list = list()
-        rps = 0
-        window = 0
-        for i in range(1, len(li)):
-            rps += 1
-            if li[i] >= 1000*window:
-                rps_list.append(rps)                    
-                rps = 0
-                window += 1
-        return rps_list
-
-    def thin_the_request_arrival_list(req_arr, target_rps):
-        def calc_norm_factor(request_arr, target_base_rps):
-            rps_list = extract_rps_from_request_arrival(request_arr)
-            # TODO: Hardcoded. Apparently, 2 percentile is not p50.
-            p50_rps = np.percentile(rps_list, 2)
-            norm_weight = p50_rps/target_base_rps
-            print("target_base_rps: ", target_base_rps)
-            print("p50_rps: ", p50_rps)
-            print("norm_weight: ", norm_weight)
-            return norm_weight
-        
-        thin_req_arr = list()
-        norm_factor = calc_norm_factor(req_arr, target_rps)
-        for i in range(len(req_arr)):
-            if i%norm_factor==0:
-                thin_req_arr.append(req_arr[i])
-        return thin_req_arr
-
-    def generate_non_bursty_cluster_workload(duration_in_sec, target_rps):
-        wrk = wrk_g.WorkloadGenerator(req_per_sec=target_rps, total_sec=duration_in_sec)
-        print("wrk")
-        ts = time.time()
-        non_bursty_req_interval = wrk.exponential_distribution()
-        print("exp function overhead: ", time.time() - ts)
-        req_arr = wrk_g.interval_to_arrival(non_bursty_req_interval)
-        return req_arr
-
-    # TODO: Hardcoded.
-    target_rps = 8
-    print(len(req_arr_0))
-    thin_request_arrival_0 = thin_the_request_arrival_list(req_arr_0, target_rps)
-    bursty_cluster_rps_list = extract_rps_from_request_arrival(thin_request_arrival_0)
-    p50_rps_of_bursty_cluster = np.percentile(bursty_cluster_rps_list, 50)
-    total_seconds = len(bursty_cluster_rps_list)
-    print("p50_rps_of_bursty_cluster: ", p50_rps_of_bursty_cluster)
-    print("target_rps: ", target_rps)
-    print("total_seconds: ", total_seconds)
-    if flags.timeshift == 1:
-        thin_request_arrival_1 = thin_the_request_arrival_list(req_arr_1, target_rps)
-    else:
-        thin_request_arrival_1 = generate_non_bursty_cluster_workload(total_seconds, p50_rps_of_bursty_cluster)
-    request_arrivals_0 = thin_request_arrival_0
-    request_arrivals_1 = thin_request_arrival_1
-    # rps_0 = extract_rps_from_request_arrival(request_arrivals_0)
-    # rps_1 = extract_rps_from_request_arrival(request_arrivals_1)
-    def calc_initial_one_service_num_replica(rps_list, factor):
-        first_five_minute_rps = rps_list[:1]
-        avg_rps = sum(first_five_minute_rps)/len(first_five_minute_rps)
-        per_replica_capacity = 10 # 100ms processing time
-        initial_num_replica = int((avg_rps/per_replica_capacity) * factor)
-        return initial_num_replica
-    num_replica_factor = 2
-    init_num_repl_cluster_0 = calc_initial_one_service_num_replica(request_arrivals_0, num_replica_factor)
-    init_num_repl_cluster_1 = calc_initial_one_service_num_replica(request_arrivals_1, num_replica_factor)
-    print("init_num_repl_cluster_0: ", init_num_repl_cluster_0)
-    print("init_num_repl_cluster_1: ", init_num_repl_cluster_1)
-    return request_arrivals_0, request_arrivals_1, init_num_repl_cluster_0, init_num_repl_cluster_1
-    
-''' Check configuration '''
-def check_flags(flags):
-    if flags.experiment == "Alibaba_trace":
-        assert flags.request_arrival_file != None
-        if flags.request_arrival_file.find(flags.workload) == -1:
-            utils.print_log("ERROR", "request_arrival_file and workload(msname) are not consistent. ({} // {})".format(flags.request_arrival_file, flags.workload))
-            
-            
+def calc_initial_one_service_num_replica(rps_list, factor):
+    first_five_minute_rps = rps_list[:1]
+    avg_rps = sum(first_five_minute_rps)/len(first_five_minute_rps)
+    per_replica_capacity = 10 # 100ms processing time
+    initial_num_replica = int((avg_rps/per_replica_capacity) * factor)
+    return initial_num_replica
+  
 if __name__ == "__main__":
     program_start_time = time.time()
     cur_time = time.strftime("%Y%m%d_%H%M%S", time.gmtime())
@@ -3073,35 +2971,38 @@ if __name__ == "__main__":
     far_inter_region = flags.far_inter_region_network_latency
     network_latency = NetworkLatency(same_rack, inter_rack, inter_zone, close_inter_region, far_inter_region)
     
-    ''' check argparse flags'''
-    check_flags(flags)
+    ''' Read request arrival time file '''
+    f1 = open(flags.c0_request_arrival_file, 'r')
+    lines = f1.readlines()
+    c0_request_arrival = list()
+    for i in range(len(lines)):
+        c0_request_arrival.append(float(lines[i]))
+    f1.close()
     
-    ''' Worklaod distribution '''
-    if flags.experiment == "Microbenchmark":
-        workload_0 = flags.workload
-        if workload_0 == "exp_burst_8x":
-            workload_1 = "exp_normal_8x"
-        elif workload_0 == "exp_burst_steep_8x":
-            workload_1 = "exp_normal_steep_8x"
-        elif workload_0 == "exp_burst_4x":
-            workload_1 = "exp_normal_4x"
-        elif workload_0 == "constant_burst_8x":
-            workload_1 = "constant_normal_8x"
-        elif workload_0 == "single_cluster_test":
-            workload_1 = "empty"
-        request_arrivals_0 = wrk_g.generate_workload(workload_0, flags.base_rps)
-        request_arrivals_1 = wrk_g.generate_workload(workload_1, flags.base_rps)
+    f2 = open(flags.c1_request_arrival_file, 'r')
+    lines = f2.readlines()
+    c1_request_arrival = list()
+    for i in range(len(lines)):
+        c1_request_arrival.append(float(lines[i]))
+    f2.close()
     
-    ## Read existing request arrival file (real trace)
-    elif flags.experiment == "Alibaba_trace":
-        request_arrivals_0, request_arrivals_1, init_num_repl_c0, init_num_repl_c1 = create_request_arrival_time_from_cached_file(flags.request_arrival_file, flags)
+    print("c0_request_arrival[0]: ", c0_request_arrival[0])
+    print("c0_request_arrival[-1]: ", c0_request_arrival[-1])
+    print("c1_request_arrival[0]: ", c1_request_arrival[0])
+    print("c1_request_arrival[-1]: ", c1_request_arrival[-1])
+    print("len(c0_request_arrival): ", len(c0_request_arrival))
+    print("len(c1_request_arrival): ", len(c1_request_arrival))
     
+    ## Deprecated: Configure initial num replica
+
     ''' Application '''
     if flags.app == "one_service":
-        if flags.experiment == "Alibaba_trace":
-            user_group_0, user_group_1, svc_a = one_service_application(flags.load_balancer, init_num_repl_c0, init_num_repl_c1)
-        else:
-            user_group_0, user_group_1, svc_a = one_service_application(flags.load_balancer, 2, 2)
+        num_replica_factor = 2
+        init_num_repl_c0 = calc_initial_one_service_num_replica(c0_request_arrival, num_replica_factor)
+        init_num_repl_c1 = calc_initial_one_service_num_replica(c1_request_arrival, num_replica_factor)
+        print("init_num_repl_cluster_0: ", init_num_repl_c0)
+        print("init_num_repl_cluster_1: ", init_num_repl_c1)
+        user_group_0, user_group_1, svc_a = one_service_application(flags.load_balancer, init_num_repl_c0, init_num_repl_c1)
     elif flags.app == "three_depth":
         user_group_0, user_group_1, svc_a = three_depth_application(flags.load_balancer)
     else:
@@ -3136,24 +3037,24 @@ if __name__ == "__main__":
     placement.print()
     # ym1 = plot_workload_histogram_2(request_arrivals_0, "Cluster 0 - Workload distribution", 0)
     # ym2 = plot_workload_histogram_2(request_arrivals_1, "Cluster 1 - Workload distribution", ym1)
-    simulator = Simulator(request_arrivals_0, request_arrivals_1, cur_time, flags)
+    simulator = Simulator(c0_request_arrival, c1_request_arrival, cur_time, flags)
     req_id = 0
     origin_cluster_0 = 0
-    for req_arr in request_arrivals_0:
+    for req_arr in c0_request_arrival:
         request = Request(req_id, origin_cluster_0)
         simulator.request_start_time[request] = req_arr
         # service A is frontend service
         simulator.schedule_event(LoadBalancing(req_arr, request, user_group_0, svc_a)) 
         req_id += 1
     origin_cluster_1 = 1
-    for req_arr in request_arrivals_1:
+    for req_arr in c1_request_arrival:
             request = Request(req_id, origin_cluster_1)
             simulator.request_start_time[request] = req_arr
             simulator.schedule_event(LoadBalancing(req_arr, request, user_group_1, svc_a))
             req_id += 1
             
     # Schedule autoscaling check event every 30 sec
-    max_arrival_time = max(request_arrivals_0[-1], request_arrivals_1[-1])
+    max_arrival_time = max(c0_request_arrival[-1], c1_request_arrival[-1])
     num_autoscale_check = int(max_arrival_time/AUTOSCALER_INTRERVAL)
     for i in range(num_autoscale_check):
         if i > 5:
