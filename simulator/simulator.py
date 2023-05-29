@@ -1592,14 +1592,9 @@ class Simulator:
         file_write_request_arrival_time(self.request_arr_1, cluster_id=1, path=path_to_req_arr_cluster_1)
         
     def write_resource_provisioning(self):
-        def file_write_autoscaler_timestamp(capa, cluster_id, path):
+        def file_write_autoscaler_timestamp(capa, path):
             file1 = open(path, 'w')
             temp_list = list()
-            temp_list.append("cluster_"+str(cluster_id)+"\n")
-            temp_list.append(self.arg_flags.app+"\n")
-            temp_list.append(self.arg_flags.workload+"\n")
-            temp_list.append(self.arg_flags.load_balancer+"\n")
-            temp_list.append(str(self.arg_flags.routing_algorithm)+"\n")
             col = "service,processing_time,timestamp,num_replica,rps_per_replica,total_rps(capacity)\n"
             temp_list.append(col)
             for service in capa:
@@ -1607,11 +1602,11 @@ class Simulator:
                     temp_list.append(str(service.name) + "," + str(service.processing_time) + "," + str(elem[0]) + "," + str(elem[1]) + "," + str(elem[2]) + "," + str(elem[3] + "\n"))
             file1.writelines(temp_list)
             file1.close()
-        path_to_autoscaler_cluster_0 = self.get_output_dir()+"/resource_provisioing_log-clsuter_0.txt"
-        path_to_autoscaler_cluster_1 = self.get_output_dir()+"/resource_provisioing_log-clsuter_1.txt"
+        path_to_autoscaler_cluster_0 = self.get_output_dir()+"/resource_provisioing_log-clsuter_0.csv"
+        path_to_autoscaler_cluster_1 = self.get_output_dir()+"/resource_provisioing_log-clsuter_1.csv"
         assert path_to_autoscaler_cluster_0 != path_to_autoscaler_cluster_1
-        file_write_autoscaler_timestamp(self.cluster0_capacity, cluster_id=0, path=path_to_autoscaler_cluster_0)
-        file_write_autoscaler_timestamp(self.cluster1_capacity, cluster_id=1, path=path_to_autoscaler_cluster_1)
+        file_write_autoscaler_timestamp(self.cluster0_capacity, path=path_to_autoscaler_cluster_0)
+        file_write_autoscaler_timestamp(self.cluster1_capacity, path=path_to_autoscaler_cluster_1)
         
 
     def schedule_event(self, event):
