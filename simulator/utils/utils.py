@@ -25,7 +25,7 @@ log_map["DEBUG"] = 4
 log_map["INFO"] = 3
 log_map["WARNING"] = 2
 log_map["ERROR"] = 1
-LOG_LEVEL = 2 # VERBOSE(5), DEBUG(4), INFO(3), WARNING(2), ERROR(1)
+LOG_LEVEL = 1 # VERBOSE(5), DEBUG(4), INFO(3), WARNING(2), ERROR(1)
 
 LOG_FILE_PATH = os.getcwd() + "/log/log_" + datetime.now().strftime("%Y%m%d_%H%M%S")
 
@@ -33,12 +33,12 @@ OUTPUT_FILE_PATH = os.getcwd() + "/output/output_" + datetime.now().strftime("%Y
 
 def print_log(tag, msg, end="\n"):
     if log_map[tag] <= LOG_LEVEL:
-        # print("[" + tag + "]: " + msg)
         print(msg, end=end)
-        if tag == "ERROR":
-            print("EXIT PROGRAM...")
-            # exit()
-            assert False
+
+def error_handling(msg, end="\n"):
+    print(msg, end=end)
+    print("EXIT PROGRAM...")
+    assert False
             
 
 ## marker list.
