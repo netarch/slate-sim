@@ -1478,15 +1478,20 @@ class Simulator:
             self.cluster1_service_latency[service] = dict()
         self.cluster0_capacity = dict()
         self.cluster1_capacity = dict()
-        self.cluster0_autoscaling_timestamp = dict()
-        self.cluster1_autoscaling_timestamp = dict()
         def create_key_with_service(dic_):
             for service in dag.all_service:
                 dic_[service] = list()
         create_key_with_service(self.cluster0_capacity)
         create_key_with_service(self.cluster1_capacity)
-        create_key_with_service(self.cluster0_autoscaling_timestamp)
-        create_key_with_service(self.cluster1_autoscaling_timestamp)
+        
+    def append_capacity_data_point(self, cluster_id, ts, svc):
+        if cluster_id == 0:
+            self.cluster0_capacity[svc].append([ts, svc.count_cluster_live_replica(0), svc.capacity_per_replica, svc.get_total_capacity(0)])
+        elif cluster_id == 1:
+            self.cluster1_capacity[svc].append([ts, svc.count_cluster_live_replica(1), svc.capacity_per_replica, svc.get_total_capacity(1)])
+        else:
+            utils.error_handling("Invalid cluster id: {}".format(cluster_id))
+        
         
     def get_latency(self, cluster_id):
         if cluster_id == 0:
@@ -1566,59 +1571,6 @@ class Simulator:
         write_latency_result(cluster0_latency, cluster_id=0, path=path_to_latency_file_cluster_0)
         write_latency_result(cluster1_latency, cluster_id=1, path=path_to_latency_file_cluster_1)
         
-    
-    def plot_and_save_resource_provisioning(self):
-        def get_ylim(req_arr_0, req_arr_1, capa_0, capa_1):
-            def get_max_rps_ylim(reqarr):
-                cur = 1000 # 1000ms, 1sec
-                cnt_list = list()
-                cnt_list.append(0)
-                idx = 0
-                for arr in reqarr:
-                    if arr > cur: # Every 1000ms
-                        cur += 1000
-                        idx += 1
-                        cnt_list.append(0)
-                    cnt_list[idx] += 1
-                max_rps = max(cnt_list) # Max number of request/sec which will be the max y value in the plot
-                return max_rps
-            max_rps_cluster_0 = get_max_rps_ylim(req_arr_0)
-            max_rps_cluster_1 = get_max_rps_ylim(req_arr_1)
-            max_rps = max(max_rps_cluster_0, max_rps_cluster_1)\
-                
-            cluster_0_capa_trend = dict()
-            cluster_1_capa_trend = dict()
-            for service in capa_0:
-                cluster_0_capa_trend[service] = [ x[1] for x in capa_0[service]]
-                print("cluster_0_capa_trend,{}".format(service.name))
-                print(cluster_0_capa_trend[service])
-            for service in capa_1:
-                cluster_1_capa_trend[service] = [ x[1] for x in capa_1[service]]
-                print("cluster_1_capa_trend[service]: ", cluster_1_capa_trend[service])
-            max_capa_cluster_0 = 0
-            for service in cluster_0_capa_trend:
-                if len(cluster_0_capa_trend[service]) > 0:
-                    max_capa_cluster_0 = max(max_capa_cluster_0, max(cluster_0_capa_trend[service]))
-            max_capa_cluster_1 = 0
-            for service in cluster_1_capa_trend:
-                if len(cluster_1_capa_trend[service]) > 0:
-                    max_capa_cluster_1 = max(max_capa_cluster_1, max(cluster_1_capa_trend[service]))
-            max_capa = max(max_capa_cluster_0, max_capa_cluster_1)
-            ymax = max(max_rps, max_capa) + 10
-            # if LOG_MACRO: utils.print_log("DEBUG", "max_rps_cluster_0: ", max_rps_cluster_0)
-            # if LOG_MACRO: utils.print_log("DEBUG", "max_rps_cluster_1: ", max_rps_cluster_1)
-            # if LOG_MACRO: utils.print_log("DEBUG", "max_capa_cluster_0: ", max_capa_cluster_0)
-            # if LOG_MACRO: utils.print_log("DEBUG", "max_capa_cluster_1: ", max_capa_cluster_1)
-            # if LOG_MACRO: utils.print_log("DEBUG", "ymax: ", ymax)
-            return ymax
-            
-        ylim = get_ylim(self.request_arr_0, self.request_arr_1, self.cluster0_capacity, self.cluster1_capacity)
-        title_cluster_0 = "cluster_0-" + self.get_experiment_title()
-        title_cluster_1 = "cluster_1-" + self.get_experiment_title()
-        path_to_autoscaler_cluster_0 = self.get_output_dir()+"/resource_provisioing_trend-cluster_0.pdf"
-        path_to_autoscaler_cluster_1 = self.get_output_dir()+"/resource_provisioing_trend-cluster_1.pdf"
-        utils.plot_workload_histogram_with_autoscaling(self.request_arr_0, self.cluster0_capacity, title_cluster_0, ylim, path_to_autoscaler_cluster_0)
-        utils.plot_workload_histogram_with_autoscaling(self.request_arr_1, self.cluster1_capacity, title_cluster_1, ylim, path_to_autoscaler_cluster_1)
         
     def write_req_arr_time(self):
         def file_write_request_arrival_time(req_arr, cluster_id, path):
@@ -1640,7 +1592,7 @@ class Simulator:
         file_write_request_arrival_time(self.request_arr_1, cluster_id=1, path=path_to_req_arr_cluster_1)
         
     def write_resource_provisioning(self):
-        def file_write_autoscaler_timestamp(req_arr, cluster_id, path):
+        def file_write_autoscaler_timestamp(capa, cluster_id, path):
             file1 = open(path, 'w')
             temp_list = list()
             temp_list.append("cluster_"+str(cluster_id)+"\n")
@@ -1648,9 +1600,11 @@ class Simulator:
             temp_list.append(self.arg_flags.workload+"\n")
             temp_list.append(self.arg_flags.load_balancer+"\n")
             temp_list.append(str(self.arg_flags.routing_algorithm)+"\n")
-            for service in req_arr:
-                for elem in req_arr[service]:
-                    temp_list.append(str(service.name) + "," + str(service.processing_time) + "," + str(elem[0]) + "," + str(elem[1])+"\n")
+            col = "service,processing_time,timestamp,num_replica,rps_per_replica,total_rps(capacity)\n"
+            temp_list.append(col)
+            for service in capa:
+                for elem in capa[service]:
+                    temp_list.append(str(service.name) + "," + str(service.processing_time) + "," + str(elem[0]) + "," + str(elem[1]) + "," + str(elem[2]) + "," + str(elem[3] + "\n"))
             file1.writelines(temp_list)
             file1.close()
         path_to_autoscaler_cluster_0 = self.get_output_dir()+"/resource_provisioing_log-clsuter_0.txt"
@@ -1776,10 +1730,11 @@ class AutoscalerCheck(Event):
         if LOG_MACRO: utils.print_log("INFO", "Execute: AutoscalerCheck during " + str(int(self.scheduled_time)) + "-" + str(int(self.scheduled_time + e_latency)))
         for service in dag.all_service:
             if service.name.find("User") == -1:
-                # if simulator.app == "one_service":
-                simulator.cluster0_capacity[service].append([self.scheduled_time, service.get_total_capacity(0)])
-                simulator.cluster1_capacity[service].append([self.scheduled_time, service.get_total_capacity(1)])
-                    
+                simulator.append_capacity_data_point(0, self.scheduled_time, service)
+                simulator.append_capacity_data_point(1, self.scheduled_time, service)
+                # simulator.cluster0_capacity[service].append([self.scheduled_time, service.count_cluster_live_replica(0), service.capacity_per_replica, service.get_total_capacity(0)])
+                # simulator.cluster1_capacity[service].append([self.scheduled_time, service.count_cluster_live_replica(1), service.capacity_per_replica, service.get_total_capacity(1)])
+                
                 # Scale up check
                 cluster_0_desired = service.calc_desired_num_replica(0)
                 cluster_0_cur_tot_num_repl = service.count_cluster_live_replica(0)
@@ -1851,13 +1806,13 @@ class ScaleUp(Event):
         ###############################################################
         if LOG_MACRO: utils.print_log("INFO", "Execute: ScaleUp " + self.service.name + " from " + str(prev_total_num_replica) + " to " + str(new_total_num_replica) + " during " + str(int(self.scheduled_time)) + "-" + str(int(self.scheduled_time + e_latency)))
         if self.cluster_id == 0:
-            # if simulator.app == "one_service":
-            simulator.cluster0_autoscaling_timestamp[self.service].append(self.scheduled_time + e_latency)
-            simulator.cluster0_capacity[self.service].append([self.scheduled_time + e_latency, self.service.get_total_capacity(self.cluster_id)])
+            simulator.append_capacity_data_point(0, self.scheduled_time + e_latency, self.service)
+            # simulator.cluster0_capacity[self.service].append([self.scheduled_time + e_latency, self.service.count_cluster_live_replica(0), self.service.capacity_per_replica, self.service.get_total_capacity(0)])
+            
+            
         if self.cluster_id == 1:
-            # if simulator.app == "one_service":
-            simulator.cluster1_autoscaling_timestamp[self.service].append(self.scheduled_time + e_latency)
-            simulator.cluster1_capacity[self.service].append([self.scheduled_time + e_latency, self.service.get_total_capacity(self.cluster_id)])
+            simulator.append_capacity_data_point(1, self.scheduled_time + e_latency, self.service)
+            # simulator.cluster1_capacity[self.service].append([self.scheduled_time + e_latency, self.service.count_cluster_live_replica(1), self.service.capacity_per_replica, self.service.get_total_capacity(1)])
             
 
 class ScaleDown(Event):
@@ -1880,13 +1835,11 @@ class ScaleDown(Event):
         ###############################################################
         if LOG_MACRO: utils.print_log("WARNING", "Execute: ScaleDown " + self.service.name + " from " + str(prev_total_num_replica) + " to " + str(new_total_num_replica) + " during " + str(int(self.scheduled_time)) + "-" + str(int(self.scheduled_time + e_latency)))
         if self.cluster_id == 0:
-            # if simulator.app == "one_service":
-            simulator.cluster0_autoscaling_timestamp[self.service].append(self.scheduled_time + e_latency)
-            simulator.cluster0_capacity[self.service].append([self.scheduled_time + e_latency, self.service.get_total_capacity(self.cluster_id)])
+            simulator.append_capacity_data_point(0, self.scheduled_time + e_latency, self.service)
+            # simulator.cluster0_capacity[self.service].append([self.scheduled_time + e_latency, self.service.get_total_capacity(self.cluster_id)])
         if self.cluster_id == 1:
-            # if simulator.app == "one_service":
-            simulator.cluster1_autoscaling_timestamp[self.service].append(self.scheduled_time + e_latency)
-            simulator.cluster1_capacity[self.service].append([self.scheduled_time + e_latency, self.service.get_total_capacity(self.cluster_id)])
+            simulator.append_capacity_data_point(1, self.scheduled_time + e_latency, self.service)
+            # simulator.cluster1_capacity[self.service].append([self.scheduled_time + e_latency, self.service.get_total_capacity(self.cluster_id)])
 
 
 ######################################################################################################
@@ -1911,9 +1864,10 @@ class LoadBalancing(Event):
     def execute_event(self):
         if LOG_MACRO: utils.print_log("INFO", "Start LB event! (src_replica: {})".format(self.src_replica.to_str()))
         if simulator.first_time_flag:
-            # if simulator.app == "one_service":
-            simulator.cluster0_capacity[self.dst_service].append([0, self.dst_service.get_total_capacity(0)])
-            simulator.cluster1_capacity[self.dst_service].append([0, self.dst_service.get_total_capacity(1)])
+            simulator.append_capacity_data_point(0, 0, self.dst_service)
+            simulator.append_capacity_data_point(1, 0, self.dst_service)
+            # simulator.cluster0_capacity[self.dst_service].append([0, self.dst_service.get_total_capacity(0)])
+            # simulator.cluster1_capacity[self.dst_service].append([0, self.dst_service.get_total_capacity(1)])
             simulator.first_time_flag = False
             
         e_latency = self.event_latency()
@@ -3076,10 +3030,10 @@ if __name__ == "__main__":
     
     simulator.start_simulation(program_start_time)
     simulator.print_summary()
-    simulator.plot_and_save_resource_provisioning()
     simulator.write_req_arr_time()
     simulator.write_resource_provisioning()
     simulator.write_simulation_latency_result()
+    # simulator.plot_and_save_resource_provisioning()
     # dag.print_and_plot_processing_time()
     # dag.print_and_plot_queuing_time()
     # dag.print_replica_num_request
