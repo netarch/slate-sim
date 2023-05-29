@@ -33,7 +33,7 @@ line_style_list = ["solid", "dashdot", "dashed", 'dotted']
 ##########################################################################################
 
 
-def plot_latency_cdf(latency_dict_, cluster_name, path):
+def plot_latency_cdf(latency_dict_, cluster_name, path, workload):
     fig = plt.figure()
     color_idx = 0
     ls_idx = 0
@@ -52,12 +52,12 @@ def plot_latency_cdf(latency_dict_, cluster_name, path):
     plt.legend(loc="lower right", fontsize=16)
     plt.xticks(fontsize=20, rotation=45)
     plt.yticks(fontsize=20)
-    plt.savefig(path+cluster_name+"-latency_cdf.pdf", dpi=100, bbox_inches='tight')
+    plt.savefig(path+workload+"-"+cluster_name+"-latency_cdf.pdf", dpi=100, bbox_inches='tight')
     plt.show()
     plt.close(fig)
     
 
-def plot_tail_latency_cdf(latency_dict_, cluster_name, path):
+def plot_tail_latency_cdf(latency_dict_, cluster_name, path, workload):
     fig = plt.figure()     
     def find_tail_idx(data, tail):
         tail_idx = 0
@@ -88,7 +88,7 @@ def plot_tail_latency_cdf(latency_dict_, cluster_name, path):
     plt.legend(loc="lower right", fontsize=16)
     plt.xticks(fontsize=20, rotation=45)
     plt.yticks(fontsize=20)
-    plt.savefig(path+cluster_name+"-tail_latency_cdf.pdf", dpi=100, bbox_inches='tight')
+    plt.savefig(path+workload+"-"+cluster_name+"-tail_latency_cdf.pdf", dpi=100, bbox_inches='tight')
     plt.show()
     plt.close(fig)
 
@@ -132,7 +132,8 @@ def print_statistics(latency_dict_):
     
 
 if __name__ == "__main__":
-    file_list = list(sys.argv[1:])
+    workload = sys.argv[1]
+    file_list = list(sys.argv[2:])
     # print("file_list: ", file_list)
     for fname in file_list:
         try:
@@ -154,8 +155,8 @@ if __name__ == "__main__":
         latency_dict[key] = latency
     
     ## PLOT CDF
-    plot_latency_cdf(latency_dict, cluster_name, path="./")
-    plot_tail_latency_cdf(latency_dict, cluster_name, path="./")
+    plot_latency_cdf(latency_dict, cluster_name, "./", workload)
+    plot_tail_latency_cdf(latency_dict, cluster_name, "./", workload)
     
     ## PRINT STATISTICS
     print_statistics(latency_dict)
