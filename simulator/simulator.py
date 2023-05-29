@@ -1599,7 +1599,7 @@ class Simulator:
             temp_list.append(col)
             for service in capa:
                 for elem in capa[service]:
-                    temp_list.append(str(service.name) + "," + str(service.processing_time) + "," + str(elem[0]) + "," + str(elem[1]) + "," + str(elem[2]) + "," + str(elem[3] + "\n"))
+                    temp_list.append(str(service.name) + "," + str(service.processing_time) + "," + str(elem[0]) + "," + str(elem[1]) + "," + str(elem[2]) + "," + str(elem[3]) + "\n")
             file1.writelines(temp_list)
             file1.close()
         path_to_autoscaler_cluster_0 = self.get_output_dir()+"/resource_provisioing_log-clsuter_0.csv"
