@@ -44,13 +44,13 @@ def get_stat_list(msname_, li_):
 
 if __name__ == "__main__":
     ts0 = time.time()
-    csv_files_dir = sys.argv[1]
-    input_files = os.listdir(csv_files_dir)
-    input_files = [x for x in input_files if x.split(".")[-1] == "csv" and  x.split("-")[0] == "providerRPC_MCR"]
+    providerRPC_MCR_dir = "providerRPC_MCR"
+    input_files = os.listdir(providerRPC_MCR_dir)
+    input_files = [x for x in input_files if x.split(".")[-1] == "csv" and  x.split("/")[-1].split("-")[0] == "providerRPC_MCR"]
     # print(input_files)
     frames = list()
     for inp in  input_files:
-        inp_path = csv_files_dir + "/" + inp
+        inp_path = providerRPC_MCR_dir + "/" + inp
         temp_df = pd.read_csv(inp_path)
         frames.append(temp_df)
         print("{} read done".format(inp))

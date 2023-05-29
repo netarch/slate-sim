@@ -47,8 +47,8 @@ def get_stat_list(msname_, li_):
 
 if __name__ == "__main__":
     start = time.time()
-    input_path = sys.argv[1]
-    print("Read cached {}".format(input_path))
+    input_path = "merged_providerRPC_MCR.csv"
+    print("Read merged providerRPC_MCR file, {}".format(input_path))
     result_df = pd.read_csv(input_path)
     unique_timestamp = result_df["timestamp"].unique().tolist()
     unique_timestamp.sort()
@@ -68,5 +68,5 @@ if __name__ == "__main__":
     svc_per_line_df = svc_per_line_df[svc_per_line_df["avg"] > 1]
     svc_per_line_df = svc_per_line_df[svc_per_line_df["min"] > 1]
     svc_per_line_df = svc_per_line_df.reset_index(drop = True)
-    svc_per_line_df.to_csv("svc_per_line-4.csv")
+    svc_per_line_df.to_csv("svc_per_line-x.csv")
     print("runtime: {}".format(time.time() - start))
