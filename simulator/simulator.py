@@ -1476,21 +1476,21 @@ class Simulator:
         self.cluster1_service_latency = dict()
         for service in dag.all_service:
             self.cluster1_service_latency[service] = dict()
-        self.cluster0_capacity = dict()
-        self.cluster1_capacity = dict()
-        def create_key_with_service(dic_):
-            for service in dag.all_service:
-                dic_[service] = list()
-        create_key_with_service(self.cluster0_capacity)
-        create_key_with_service(self.cluster1_capacity)
+            
+        self.cluster_capacity = dict()
+        for service in dag.all_service:
+                self.cluster_capacity[service] = list()
+                
+        # self.cluster0_capacity = dict()
+        # self.cluster1_capacity = dict()
+        # def create_key_with_service(dic_):
+        #     for service in dag.all_service:
+        #         dic_[service] = list()
+        # create_key_with_service(self.cluster0_capacity)
+        # create_key_with_service(self.cluster1_capacity)
         
     def append_capacity_data_point(self, cluster_id, ts, svc):
-        if cluster_id == 0:
-            self.cluster0_capacity[svc].append([ts, svc.count_cluster_live_replica(0), svc.capacity_per_replica, svc.get_total_capacity(0)])
-        elif cluster_id == 1:
-            self.cluster1_capacity[svc].append([ts, svc.count_cluster_live_replica(1), svc.capacity_per_replica, svc.get_total_capacity(1)])
-        else:
-            utils.error_handling("Invalid cluster id: {}".format(cluster_id))
+        self.cluster_capacity[svc].append([cluster_id, ts, svc.count_cluster_live_replica(0), svc.capacity_per_replica, svc.get_total_capacity(0)])
         
         
     def get_latency(self, cluster_id):
@@ -1592,21 +1592,32 @@ class Simulator:
         file_write_request_arrival_time(self.request_arr_1, cluster_id=1, path=path_to_req_arr_cluster_1)
         
     def write_resource_provisioning(self):
-        def file_write_autoscaler_timestamp(capa, path):
-            file1 = open(path, 'w')
-            temp_list = list()
-            col = "service,processing_time,timestamp,num_replica,rps_per_replica,total_rps(capacity)\n"
-            temp_list.append(col)
-            for service in capa:
-                for elem in capa[service]:
-                    temp_list.append(str(service.name) + "," + str(service.processing_time) + "," + str(elem[0]) + "," + str(elem[1]) + "," + str(elem[2]) + "," + str(elem[3]) + "\n")
-            file1.writelines(temp_list)
-            file1.close()
-        path_to_autoscaler_cluster_0 = self.get_output_dir()+"/resource_provisioing_log-clsuter_0.csv"
-        path_to_autoscaler_cluster_1 = self.get_output_dir()+"/resource_provisioing_log-clsuter_1.csv"
-        assert path_to_autoscaler_cluster_0 != path_to_autoscaler_cluster_1
-        file_write_autoscaler_timestamp(self.cluster0_capacity, path=path_to_autoscaler_cluster_0)
-        file_write_autoscaler_timestamp(self.cluster1_capacity, path=path_to_autoscaler_cluster_1)
+        path_ = self.get_output_dir() + "/resource_provisioing_log.csv"
+        file1 = open(path_, 'w')
+        temp_list = list()
+        col = "cluster_id,service,processing_time,timestamp,num_replica,rps_per_replica,capacity\n"
+        temp_list.append(col)
+        for service in self.cluster_capacity:
+            for elem in self.cluster_capacity[service]:
+                temp_list.append(str(elem[0]) + "," + str(service.name) + "," + str(service.processing_time) + "," + str(elem[1]) + "," + str(elem[2]) + "," + str(elem[3]) + "," + str(elem[4]) + "\n")
+        file1.writelines(temp_list)
+        file1.close()
+            
+        # def file_write_autoscaler_timestamp(capa, path):
+        #     file1 = open(path, 'w')
+        #     temp_list = list()
+        #     col = "cluster_id,service,processing_time,timestamp,num_replica,rps_per_replica,capacity\n"
+        #     temp_list.append(col)
+        #     for service in capa:
+        #         for elem in capa[service]:
+        #             temp_list.append(str(service.name) + "," + str(service.processing_time) + "," + str(elem[0]) + "," + str(elem[1]) + "," + str(elem[2]) + "," + str(elem[3]) + "\n")
+        #     file1.writelines(temp_list)
+        #     file1.close()
+        # path_to_autoscaler_cluster_0 = self.get_output_dir()+"/resource_provisioing_log-cluster_0.csv"
+        # path_to_autoscaler_cluster_1 = self.get_output_dir()+"/resource_provisioing_log-cluster_1.csv"
+        # assert path_to_autoscaler_cluster_0 != path_to_autoscaler_cluster_1
+        # file_write_autoscaler_timestamp(self.cluster0_capacity, path=path_to_autoscaler_cluster_0)
+        # file_write_autoscaler_timestamp(self.cluster1_capacity, path=path_to_autoscaler_cluster_1)
         
 
     def schedule_event(self, event):
