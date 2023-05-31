@@ -6,8 +6,8 @@ load_balancer="RoundRobin"
 workload="hotos-6d9c26b9"
 fixed_autoscaler=0
 
-c0_request_arrival_file="c0-req_arr-three_depth-6d9c26b9.txt"
-c1_request_arrival_file="c1-req_arr-three_depth-6d9c26b9.txt"
+c0_request_arrival_file="hotos_6d9c26b9-request_arrival-cluster0.txt"
+c1_request_arrival_file="hotos_6d9c26b9-request_arrival-cluster1.txt"
 
 #for routing_algorithm in "LCLB"
 for routing_algorithm in "LCLB" "MCLB" "heuristic_TE"
