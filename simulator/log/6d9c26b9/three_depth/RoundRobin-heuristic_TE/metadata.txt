@@ -1,0 +1,16 @@
+app : three_depth
+load_balancer : RoundRobin
+routing_algorithm : heuristic_TE
+c0_request_arrival_file : ../parser/new_request_arrival_time_clsuter_0-6d9c26b9.txt
+c1_request_arrival_file : ../parser/new_request_arrival_time_clsuter_1-6d9c26b9.txt
+workload : 6d9c26b9
+fixed_autoscaler : 0
+output_dir : log
+response_time_window_size : 200
+same_rack_network_latency : 0
+inter_rack_network_latency : 0.5
+inter_zone_network_latency : 2
+close_inter_region_network_latency : 15
+far_inter_region_network_latency : 40
+start_time : 20230531_025137
+runtime : 3298.348279237747

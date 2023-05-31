@@ -1,0 +1,16 @@
+app : three_depth
+load_balancer : RoundRobin
+routing_algorithm : MCLB
+c0_request_arrival_file : sample-request_arrival-cluster0.txt
+c1_request_arrival_file : sample-request_arrival-cluster1.txt
+workload : sample
+fixed_autoscaler : 0
+output_dir : log
+response_time_window_size : 200
+same_rack_network_latency : 0
+inter_rack_network_latency : 0.5
+inter_zone_network_latency : 2
+close_inter_region_network_latency : 15
+far_inter_region_network_latency : 40
+start_time : 20230531_024941
+runtime : 152.59330010414124
