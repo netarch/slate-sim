@@ -1490,7 +1490,7 @@ class Simulator:
         # create_key_with_service(self.cluster1_capacity)
         
     def append_capacity_data_point(self, cluster_id, ts, svc):
-        self.cluster_capacity[svc].append([cluster_id, ts, svc.count_cluster_live_replica(0), svc.capacity_per_replica, svc.get_total_capacity(0)])
+        self.cluster_capacity[svc].append([cluster_id, ts, svc.count_cluster_live_replica(cluster_id), svc.capacity_per_replica, svc.get_total_capacity(cluster_id)])
         
         
     def get_latency(self, cluster_id):
@@ -1552,11 +1552,6 @@ class Simulator:
         def write_latency_result(li_, cluster_id, path):
             f_ = open(path, 'w')
             temp_list = list()
-            temp_list.append("cluster_"+str(cluster_id)+"\n")
-            temp_list.append(self.arg_flags.app+"\n")
-            temp_list.append(self.arg_flags.workload+"\n")
-            temp_list.append(self.arg_flags.load_balancer+"\n")
-            temp_list.append(self.arg_flags.routing_algorithm+"\n")
             for elem in li_:
                 temp_list.append(str(elem)+"\n")
             f_.writelines(temp_list)
@@ -1576,11 +1571,6 @@ class Simulator:
         def file_write_request_arrival_time(req_arr, cluster_id, path):
             file1 = open(path, 'w')
             temp_list = list()
-            temp_list.append("cluster_"+str(cluster_id)+"\n")
-            temp_list.append(self.arg_flags.app+"\n")
-            temp_list.append(self.arg_flags.workload+"\n")
-            temp_list.append(self.arg_flags.load_balancer+"\n")
-            temp_list.append(str(self.arg_flags.routing_algorithm)+"\n")
             for elem in req_arr:
                 temp_list.append(str(elem)+"\n")
             file1.writelines(temp_list)
@@ -1811,14 +1801,7 @@ class ScaleUp(Event):
         assert new_total_num_replica == self.how_many + prev_total_num_replica
         ###############################################################
         if LOG_MACRO: utils.print_log("INFO", "Execute: ScaleUp " + self.service.name + " from " + str(prev_total_num_replica) + " to " + str(new_total_num_replica) + " during " + str(int(self.scheduled_time)) + "-" + str(int(self.scheduled_time + e_latency)))
-        if self.cluster_id == 0:
-            simulator.append_capacity_data_point(0, self.scheduled_time + e_latency, self.service)
-            # simulator.cluster0_capacity[self.service].append([self.scheduled_time + e_latency, self.service.count_cluster_live_replica(0), self.service.capacity_per_replica, self.service.get_total_capacity(0)])
-            
-            
-        if self.cluster_id == 1:
-            simulator.append_capacity_data_point(1, self.scheduled_time + e_latency, self.service)
-            # simulator.cluster1_capacity[self.service].append([self.scheduled_time + e_latency, self.service.count_cluster_live_replica(1), self.service.capacity_per_replica, self.service.get_total_capacity(1)])
+        simulator.append_capacity_data_point(self.cluster_id, self.scheduled_time + e_latency, self.service)
             
 
 class ScaleDown(Event):
@@ -1840,12 +1823,7 @@ class ScaleDown(Event):
         new_total_num_replica = self.service.scale_down(self.how_many_scale_down, self.cluster_id)
         ###############################################################
         if LOG_MACRO: utils.print_log("WARNING", "Execute: ScaleDown " + self.service.name + " from " + str(prev_total_num_replica) + " to " + str(new_total_num_replica) + " during " + str(int(self.scheduled_time)) + "-" + str(int(self.scheduled_time + e_latency)))
-        if self.cluster_id == 0:
-            simulator.append_capacity_data_point(0, self.scheduled_time + e_latency, self.service)
-            # simulator.cluster0_capacity[self.service].append([self.scheduled_time + e_latency, self.service.get_total_capacity(self.cluster_id)])
-        if self.cluster_id == 1:
-            simulator.append_capacity_data_point(1, self.scheduled_time + e_latency, self.service)
-            # simulator.cluster1_capacity[self.service].append([self.scheduled_time + e_latency, self.service.get_total_capacity(self.cluster_id)])
+        simulator.append_capacity_data_point(self.cluster_id, self.scheduled_time + e_latency, self.service)
 
 
 ######################################################################################################
