@@ -43,6 +43,8 @@ SCALE_DOWN_OVERHEAD=5000 # 5sec
 SCALE_DOWN_STABILIZE_WINDOW=300000 # kubernetes default: 300,000ms, 300sec, 5min
 SCALE_DOWN_STATUS=[1,1] # It keeps track of stabilization window status.
 
+CNT_DELAYED_ROUTING = 0 # hotos: 107128
+# $$ C_3(node[1000]) is delayed schedulable (1000d vs 0 at time 91.30701732449234 = 9949646.877520842-9949555.570503518)
 
 '''
 "graph" data structure.
@@ -475,7 +477,15 @@ class Service:
         for repl in self.replicas:
             if repl.cluster_id == cluster_id and repl.is_dead == False:
                 if repl.is_schedulable():
-                    if LOG_MACRO: utils.print_log("WARNING", "has_schedulable_replica, cluster {} has schedulable replica for service {}".format(cluster_id, self.name))
+                    if LOG_MACRO: utils.print_log("DEBUG", "has_schedulable_replica, cluster {} has schedulable replica for service {}".format(cluster_id, self.name))
+                    return True
+        return False
+    
+    def has_delayed_schedulable_replica(self, cluster_id, t_):
+        for repl in self.replicas:
+            if repl.cluster_id == cluster_id and repl.is_dead == False:
+                if repl.is_delayed_schedulable(t_):
+                    if LOG_MACRO: utils.print_log("DEBUG", "has_delayed_schedulable_replica, cluster {} has schedulable replica for service {}".format(cluster_id, self.name))
                     return True
         return False
     
@@ -937,7 +947,9 @@ class Replica:
         self.cluster_id = id%2
         self.node = None
         self.allocated_mcore = 0 # NOTE: Replica has its own dedicated core.
-        self.available_mcore = 0
+        self.repl_avail_mcore = 0
+        self.repl_avail_mcore_history = list()
+        self.repl_history_size = 10
         self.name = self.service.name + "_" + str(self.id)
         self.child_services = dag.get_child_services(self.service)
         self.child_replica = dict() # Multi-cluster aware
@@ -1261,42 +1273,67 @@ class Replica:
     def place_and_allocate(self, node_, allocated_mcore_):
         self.node = node_
         self.allocated_mcore = allocated_mcore_
-        self.available_mcore = allocated_mcore_
-    
+        self.repl_avail_mcore = allocated_mcore_
+        
+        
     # True from this function guarantees that AT LEAST one request could be scheduled. 
     # And possibly, more than one request could be scheduled.
     def is_schedulable(self):
-        # print(self.to_str()+ " is_schedulable: ", end="")
-        if self.available_mcore >= self.service.mcore_per_req:
-            if LOG_MACRO: utils.print_log("DEBUG", self.to_str() + "is schedulable - avail core(" +  str(self.available_mcore) + ") > " + self.service.name + "(required core: "+ str(self.service.mcore_per_req) +")")
+        if self.repl_avail_mcore >= self.service.mcore_per_req:
+            if LOG_MACRO: utils.print_log("DEBUG", self.to_str() + "is schedulable - avail core(" +  str(self.repl_avail_mcore) + ") > " + self.service.name + "(required core: "+ str(self.service.mcore_per_req) +")")
             return True
         else:
-            if LOG_MACRO: utils.print_log("DEBUG", self.to_str() + " is NOT schedulable. Not enough resource - avail core(" +  str(self.available_mcore) + "), " + self.service.name + "(required core: "+ str(self.service.mcore_per_req) +")")
+            if LOG_MACRO: utils.print_log("DEBUG", self.to_str() + " is NOT schedulable. Not enough resource - avail core(" +  str(self.repl_avail_mcore) + "), " + self.service.name + "(required core: "+ str(self.service.mcore_per_req) +")")
             return False
         
+        
+    def is_delayed_schedulable(self, t_):
+        for elem in self.repl_avail_mcore_history[::-1]:
+            ## WARNING: hardcoded delay. assuming inter-region multi-clusters
+            if (t_ - elem[0]) > network_latency.far_inter_region:
+                delayed_avail_core = elem[1]
+                if elem[1] >= self.service.mcore_per_req:
+                    if LOG_MACRO: utils.print_log("DEBUG", self.to_str() + "is delayed schedulable - avail core(" +  str(delayed_avail_core) + " at time " + str(elem[0]) + ") > " + self.service.name + "(required core: "+ str(self.service.mcore_per_req) +")")
+                    
+                    
+                    if self.repl_avail_mcore_history[-1][1] != delayed_avail_core:
+                        # print("$$ {} is delayed schedulable ({}d vs {} at time {} = {}-{})".format(self.to_str(), str(delayed_avail_core), str(self.repl_avail_mcore_history[-1][1]), str(t_-elem[0]), str(t_), str(elem[0])))
+                        global CNT_DELAYED_ROUTING
+                        CNT_DELAYED_ROUTING += 1
+                    return True
+                else:
+                    if LOG_MACRO: utils.print_log("DEBUG", self.to_str() + " is NOT delayed schedulable. Not enough resource - avail core(" +  str(delayed_avail_core) + "), " + self.service.name + "(required core: "+ str(self.service.mcore_per_req) +")")
+                    return False
+        return self.is_schedulable()
+            
+
+# $$ A_3(node[1000]) is delayed schedulable (1000d vs 0 at time 146.73081412538886 = 14527691.607726466-14527544.87691234)
+
     # def allocate_resource_to_request(self, req):
-    #     if self.service.mcore_per_req > self.available_mcore:
-    #         utils.error_handling(self.to_str() + "request[" + str(req.id) + "], required_mcore(" + str(self.service.mcore_per_req) +  ") > available_mcore("+str(self.available_mcore) + ") ")
-    #     self.available_mcore -= self.service.mcore_per_req
-    #     if self.available_mcore < 0:
+    #     if self.service.mcore_per_req > self.repl_avail_mcore:
+    #         utils.error_handling(self.to_str() + "request[" + str(req.id) + "], required_mcore(" + str(self.service.mcore_per_req) +  ") > repl_avail_mcore("+str(self.repl_avail_mcore) + ") ")
+    #     self.repl_avail_mcore -= self.service.mcore_per_req
+    #     if self.repl_avail_mcore < 0:
     #         utils.error_handling("Negative available core is not allowed. " + self.to_str())
     #     if LOG_MACRO: utils.print_log("DEBUG", "Allocate "  + str(self.service.mcore_per_req) + " core to request[" + str(req.id) + "] in " +  self.to_str() + ", ")
     
-    def allocate_resource(self):
-        if self.service.mcore_per_req > self.available_mcore:
-            utils.error_handling(self.to_str() + ", required_mcore(" + str(self.service.mcore_per_req) +  ") > available_mcore("+str(self.available_mcore) + ") ")
-            
-        self.available_mcore -= self.service.mcore_per_req
-        
-        if self.available_mcore < 0:
-            utils.error_handling(self.to_str() + ", negative available core(" + str(self.available_mcore) + ")")
+    def allocate_resource_to_request(self, t_):
+        self.repl_avail_mcore -= self.service.mcore_per_req
+        self.repl_avail_mcore_history.append([t_, self.repl_avail_mcore])
+        if len(self.repl_avail_mcore_history) > 20:
+            self.repl_avail_mcore_history.pop(0)
+        if self.repl_avail_mcore < 0:
+            utils.error_handling(self.to_str() + ", negative available core(" + str(self.repl_avail_mcore) + ")")
         if LOG_MACRO: utils.print_log("DEBUG", self.to_str() + ", Allocate "  + str(self.service.mcore_per_req) + " mcore ")
         
-    def free_resource_from_request(self, req):
-        self.available_mcore += self.service.mcore_per_req
-        if self.available_mcore > self.allocated_mcore:
+    def free_resource_from_request(self, req, t_):
+        self.repl_avail_mcore += self.service.mcore_per_req
+        self.repl_avail_mcore_history.append([t_, self.repl_avail_mcore])
+        if len(self.repl_avail_mcore_history) > 20:
+            self.repl_avail_mcore_history.pop(0)
+        if self.repl_avail_mcore > self.allocated_mcore:
             utils.error_handling("Available core in replica " + self.name + " can't be greater than allocated core. " + self.to_str())
-        if self.available_mcore > self.node.total_mcore:
+        if self.repl_avail_mcore > self.node.total_mcore:
             utils.error_handling("Available core in replica " + self.name + " can't be greater than total num cores in node[" + self.node.to_str() + "].")
         if LOG_MACRO: utils.print_log("DEBUG", self.to_str() + ", free " + str(self.service.mcore_per_req) + " core from request[" + str(req.id) + "] in " + self.to_str())
         
@@ -1898,9 +1935,9 @@ class LoadBalancing(Event):
                             if LOG_MACRO: utils.print_log("INFO", "Replica "+repl.to_str()+" was dead. It will be excluded from lb dst candidate.")
         
         elif ROUTING_ALGORITHM == "heuristic_TE":
-            # This is naive implementation of request routing.
-            # First, it assumes that you know the available resource of the remote cluster magically.
-            # Second, the requests will be routed if the load becomes soaring up and the local cluster cannot accomodate it with the current capacity AND if the remote cluster has some rooms to process more request other than its local load.
+            ## This is naive implementation of request routing.
+            ## Assumption: it assumes that you know the available resource of the remote cluster magically.
+            ## Heuristic: the requests will be routed when the load becomes soaring up and the local cluster cannot accomodate it with the current capacity AND when the remote cluster has some rooms to process more request other than its local load.
             if self.src_replica.cluster_id == 0:
                 other_cluster = 1
             else:
@@ -1908,28 +1945,34 @@ class LoadBalancing(Event):
             local_candidate = self.dst_service.get_cluster_replica(self.src_replica.cluster_id)
             remote_candidate = self.dst_service.get_cluster_replica(other_cluster)
             
-            #############################################################################################
+            ## WARNING!!!
             ## NOTE: hardcode. Allow the request route only from the cluster 0(bursty) to the cluster 1(non-bursty)
             if self.src_replica.cluster_id == 0: 
                 ''' Fixed portion routing '''
+                ###################################################################
                 local_cluster_remainig_capacity = self.dst_service.has_schedulable_replica(self.src_replica.cluster_id)
-                remote_cluster_remaining_capacity = self.dst_service.has_schedulable_replica(other_cluster)
+                ###################################################################
                 
                 if local_cluster_remainig_capacity == False:
                     does_local_has_zero_queue_replica = self.dst_service.has_zero_queue_replica(self.src_replica.cluster_id)
                     if does_local_has_zero_queue_replica:
                         local_cluster_remainig_capacity = True
                 
-                if LOG_MACRO: utils.print_log("WARNING", "local_cluster_remaining_capacity: {}, remote_cluster_remaining_capacity: {}".format(local_cluster_remainig_capacity, remote_cluster_remaining_capacity))
+                # if LOG_MACRO: utils.print_log("WARNING", "local_cluster_remaining_capacity: {}, remote_cluster_remaining_capacity: {}".format(local_cluster_remainig_capacity, remote_cluster_remaining_capacity))
                 if local_cluster_remainig_capacity > 0:
                     superset_candidates = local_candidate
                     if LOG_MACRO: utils.print_log("WARNING", "(LB) local free, cluster {}({}) local routing {}".format(self.src_replica.cluster_id, self.src_replica.to_str(), self.src_replica.cluster_id))
-                elif remote_cluster_remaining_capacity > 0: # Route the request to the remote cluster ONLY when there 
-                    if LOG_MACRO: utils.print_log("WARNING", "(LB) local overloaded and remote free, remote routing from cluster {}({}) to cluster{}".format(self.src_replica.cluster_id, self.src_replica.to_str(), other_cluster))
-                    superset_candidates = remote_candidate
                 else:
-                    if LOG_MACRO: utils.print_log("WARNING", "(LB) both overloaded, local routing from cluster {}({}) to cluster{}".format(self.src_replica.cluster_id, self.src_replica.to_str(), other_cluster))
-                    superset_candidates = local_candidate
+                    if simulator.arg_flags.delayed_information:
+                        remote_cluster_remaining_capacity = self.dst_service.has_delayed_schedulable_replica(other_cluster, self.scheduled_time + e_latency)
+                    else:
+                        remote_cluster_remaining_capacity = self.dst_service.has_schedulable_replica(other_cluster)
+                    if remote_cluster_remaining_capacity > 0: # Route the request to the remote cluster ONLY when there 
+                        if LOG_MACRO: utils.print_log("WARNING", "(LB) local overloaded and remote free, remote routing from cluster {}({}) to cluster{}".format(self.src_replica.cluster_id, self.src_replica.to_str(), other_cluster))
+                        superset_candidates = remote_candidate
+                    else:
+                        if LOG_MACRO: utils.print_log("WARNING", "(LB) both overloaded, local routing from cluster {}({}) to cluster{}".format(self.src_replica.cluster_id, self.src_replica.to_str(), other_cluster))
+                        superset_candidates = local_candidate
                 
                 ## ERROR Handling    
                 verifying_superset_candidates = placement.svc_to_repl[self.dst_service]
@@ -2367,7 +2410,7 @@ class TryToProcessRequest(Event):
         e_latency = self.event_latency()
         if LOG_MACRO: utils.print_log("INFO", "Execute: TryToProcessRequest in " + self.dst_replica.to_str() + " during " + str(int(self.scheduled_time)) + "-" + str(int(self.scheduled_time + e_latency)))
         if self.dst_replica.is_schedulable() and (len(self.dst_replica.fixed_ready_queue) > 0):
-            self.dst_replica.allocate_resource()
+            self.dst_replica.allocate_resource_to_request(self.scheduled_time + e_latency)
             self.dst_replica.processing_queue_size -= 1
             
             ############################################################################
@@ -2414,7 +2457,7 @@ class ProcessRequest(Event):
         # target_req, queued_time = self.dst_replica.process_request()
         target_req, src_repl = self.dst_replica.dequeue_from_ready_queue()
         ## BUG: You are supposed to allocate the resource to the request once it decides to execute the request which is TryToProcess.
-        ## allocate_resource call was moved to TryToProcess. ## BUG Fixed
+        ## allocate_resource_to_request call was moved to TryToProcess. ## BUG Fixed
         # self.dst_replica.allocate_resource_to_request(target_req) ## BUG
         assert target_req in self.dst_replica.queueing_time
         queueing_start_time = self.dst_replica.queueing_time[target_req]
@@ -2458,7 +2501,7 @@ class EndProcessRequest(Event):
         e_latency = self.event_latency()
         if LOG_MACRO: utils.print_log("INFO", "Execute: EndProcessRequest(request[" + str(self.request.id) + "]) in " + self.dst_replica.to_str() + " during " + str(int(self.scheduled_time)) + "-" + str(int(self.scheduled_time + e_latency)))
         
-        self.dst_replica.free_resource_from_request(self.request)
+        self.dst_replica.free_resource_from_request(self.request, self.scheduled_time + e_latency)
         
         if dag.is_leaf(self.dst_replica.service):
             if LOG_MACRO: utils.print_log("DEBUG", "request[" + str(self.request.id) + "] reached leaf service " + self.dst_replica.service.name)
@@ -2745,7 +2788,7 @@ def one_service_application(load_balancer, init_num_repl_c0, init_num_repl_c1):
     
     return u_0, u_1, svc_a
 
-def three_depth_application(load_balancer):
+def three_depth_application(load_balancer, c0_req_arr, c1_req_arr):
     user_0 = Service(name_="User0", mcore_per_req_=0, processing_t_=0, lb_=load_balancer)
     user_1 = Service(name_="User1", mcore_per_req_=0, processing_t_=0, lb_=load_balancer)
     svc_a = Service(name_="A", mcore_per_req_=1000, processing_t_=30, lb_=load_balancer) # H
@@ -2754,6 +2797,9 @@ def three_depth_application(load_balancer):
     svc_d = Service(name_="D", mcore_per_req_=1000, processing_t_=40, lb_=load_balancer) # H
     svc_e = Service(name_="E", mcore_per_req_=1000, processing_t_=30, lb_=load_balancer) # H
     svc_f = Service(name_="F", mcore_per_req_=1000, processing_t_=10, lb_=load_balancer) # L
+    # Currently it is assumed that cluster 0 and cluster 1 have the same application topology
+    service_map = {"A":svc_a, "B":svc_b, "C":svc_c, "D":svc_d, "E":svc_e, "F":svc_f}
+    
     dag.add_service(user_0)
     dag.add_service(user_1)
     dag.add_service(svc_a)
@@ -2762,7 +2808,6 @@ def three_depth_application(load_balancer):
     dag.add_service(svc_d)
     dag.add_service(svc_e)
     dag.add_service(svc_f)
-    service_map = {"A":svc_a, "B":svc_b, "C":svc_c, "D":svc_d, "E":svc_e, "F":svc_f}
     
     # DAG
     dag.add_dependency(parent_service=user_0, child_service=svc_a, weight=10)
@@ -2781,15 +2826,24 @@ def three_depth_application(load_balancer):
     temp_all_replica.append(u_0)
     temp_all_replica.append(u_1)
     
-    # TODO: Initial num of replicas is hardcoded.
-    # Four replicas of the service A.
-    num_replica_for_cluster_0 = {"A":3, "B":1, "C":2, "D":4, "E":3, "F":1}
-    num_replica_for_cluster_1 = {"A":3, "B":1, "C":2, "D":4, "E":3, "F":1}
-    # replica_for_cluster_0 = {"A":list(), "B":list(), "C":list(), "D":list(), "E":list(), "F":list()}
+    # num_replica_for_cluster_0 = {"A":3, "B":1, "C":2, "D":4, "E":3, "F":1}
+    # num_replica_for_cluster_1 = {"A":3, "B":1, "C":2, "D":4, "E":3, "F":1} # HotOS version
+    num_replica_for_cluster_0 = dict()
+    num_replica_for_cluster_1 = dict()
+    for svc in service_map:
+        num_replica_for_cluster_0[svc] = calc_initial_num_replica(c0_req_arr, service_map[svc].capacity_per_replica, 2)
+    for svc in service_map:
+        num_replica_for_cluster_1[svc] = calc_initial_num_replica(c1_req_arr, service_map[svc].capacity_per_replica, 2)
+        
+    print("- num_replica_for_cluster_0")
+    for svc in num_replica_for_cluster_0:
+        print("\t- {}: {}".format(svc, num_replica_for_cluster_0[svc]))
+    print("- num_replica_for_cluster_1")
+    for svc in num_replica_for_cluster_1:
+        print("\t- {}: {}".format(svc, num_replica_for_cluster_1[svc]))
     replica_for_cluster_0 = dict()
     for service in service_map:
         replica_for_cluster_0[service] = list()
-    # replica_for_cluster_1 = {"A":list(), "B":list(), "C":list(), "D":list(), "E":list(), "F":list()}
     replica_for_cluster_1 = dict()
     for service in service_map:
         replica_for_cluster_1[service] = list()
@@ -2861,6 +2915,9 @@ def argparse_add_argument(parser):
     parser.add_argument("--workload", type=str, default=None, help="workload type or msname", required=True)
     
     parser.add_argument("--fixed_autoscaler", type=int, default=None, choices=[0, 1], help="fixed autoscaler", required=True)
+    parser.add_argument("--autoscaler_period", type=int, default=None, help="autoscaler_period", required=True)
+    
+    parser.add_argument("--delayed_information", type=int, default=None, choices=[0, 1], help="delayed information between clusters", required=True)
     
     parser.add_argument("--output_dir", type=str, default="log", help="base directory where output log will be written.", required=True)
     
@@ -2886,11 +2943,29 @@ def print_argument(flags):
         if LOG_MACRO: utils.print_log("INFO", "{}: {}".format(key, str(value)))
     if LOG_MACRO: utils.print_log("INFO", "=============================================================")
 
-def calc_initial_one_service_num_replica(rps_list, factor):
-    first_five_minute_rps = rps_list[:1]
-    avg_rps = sum(first_five_minute_rps)/len(first_five_minute_rps)
-    per_replica_capacity = 10 # 100ms processing time
-    initial_num_replica = int((avg_rps/per_replica_capacity) * factor)
+def calc_initial_num_replica(req_arr, per_replica_capacity, factor):
+    def request_arrival_to_rps(req_arr):
+        rps_list = list()
+        rps = 0
+        window = 0
+        for i in range(len(req_arr)):
+            rps += 1
+            if req_arr[i] >= 1000*window:
+                rps_list.append(rps)                    
+                rps = 0
+                window += 1
+        return rps_list
+    rps_list = request_arrival_to_rps(req_arr)
+    initial_rps = rps_list[:60]
+    avg_init_rps = sum(initial_rps)/len(initial_rps)
+    initial_num_replica = int((avg_init_rps/per_replica_capacity) * factor)
+    # print("rps_list: ", rps_list)
+    # print("per_replica_capacity: ", per_replica_capacity)
+    # print("avg_init_rps: ", avg_init_rps)
+    # print("initial_rps: ", initial_rps)
+    # print("initial_num_replica: ", initial_num_replica)
+    if initial_num_replica == 0 or initial_num_replica == 1:
+        initial_num_replica = 2
     return initial_num_replica
   
 if __name__ == "__main__":
@@ -2943,17 +3018,15 @@ if __name__ == "__main__":
 
     ''' Application '''
     if flags.app == "one_service":
-        num_replica_factor = 2
-        init_num_repl_c0 = calc_initial_one_service_num_replica(c0_request_arrival, num_replica_factor)
-        init_num_repl_c1 = calc_initial_one_service_num_replica(c1_request_arrival, num_replica_factor)
+        init_num_repl_c0 = calc_initial_num_replica(c0_request_arrival, 2)
+        init_num_repl_c1 = calc_initial_num_replica(c1_request_arrival, 2)
         print("init_num_repl_cluster_0: ", init_num_repl_c0)
         print("init_num_repl_cluster_1: ", init_num_repl_c1)
         user_group_0, user_group_1, svc_a = one_service_application(flags.load_balancer, init_num_repl_c0, init_num_repl_c1)
     elif flags.app == "three_depth":
-        user_group_0, user_group_1, svc_a = three_depth_application(flags.load_balancer)
+        user_group_0, user_group_1, svc_a = three_depth_application(flags.load_balancer, c0_request_arrival, c1_request_arrival)
     else:
         utils.error_handling("Application scenario " + flags.app + " is not supported.")
-    
     ''' Replica level DAG '''
     def create_replica_dependency():
         for repl in dag.all_replica:
@@ -3001,10 +3074,12 @@ if __name__ == "__main__":
             
     # Schedule autoscaling check event every 30 sec
     max_arrival_time = max(c0_request_arrival[-1], c1_request_arrival[-1])
-    num_autoscale_check = int(max_arrival_time/AUTOSCALER_INTRERVAL)
+    # num_autoscale_check = int(max_arrival_time/AUTOSCALER_INTRERVAL)
+    num_autoscale_check = int(max_arrival_time/simulator.arg_flags.autoscaler_period)
     for i in range(num_autoscale_check):
         if i > 5:
-            simulator.schedule_event(AutoscalerCheck(AUTOSCALER_INTRERVAL*i))
+            # simulator.schedule_event(AutoscalerCheck(AUTOSCALER_INTRERVAL*i))
+            simulator.schedule_event(AutoscalerCheck(simulator.arg_flags.autoscaler_period*i))
             
     # Schedule UpdateRPS every RPS_UPDATE_INTERVAL sec
     num_rps_update = int(max_arrival_time/RPS_UPDATE_INTERVAL)
@@ -3017,8 +3092,10 @@ if __name__ == "__main__":
     simulator.write_req_arr_time()
     simulator.write_resource_provisioning()
     simulator.write_simulation_latency_result()
+    
     # simulator.plot_and_save_resource_provisioning()
     # dag.print_and_plot_processing_time()
     # dag.print_and_plot_queuing_time()
     # dag.print_replica_num_request
     
+    print("CNT_DELAYED_ROUTING: ", CNT_DELAYED_ROUTING)
