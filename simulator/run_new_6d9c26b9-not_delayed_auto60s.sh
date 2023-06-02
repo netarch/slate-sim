@@ -8,8 +8,8 @@ autoscaler_period=60
 delayed_information=0
 workload="6d9c26b9-delay${delayed_information}-auto${autoscaler_period}"
 
-c0_request_arrival_file="../parser/new_request_arrival_time_clsuter_0-6d9c26b9.txt"
-c1_request_arrival_file="../parser/new_request_arrival_time_clsuter_1-6d9c26b9.txt"
+c0_request_arrival_file="request_arrival/new_request_arrival_time_clsuter_0-6d9c26b9.txt"
+c1_request_arrival_file="request_arrival/new_request_arrival_time_clsuter_1-6d9c26b9.txt"
 
 # for routing_algorithm in "LCLB"
 for routing_algorithm in "LCLB" "MCLB" "heuristic_TE"

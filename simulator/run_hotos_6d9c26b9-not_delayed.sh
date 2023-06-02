@@ -7,8 +7,8 @@ workload="hotos-6d9c26b9-not_delayed"
 fixed_autoscaler=0
 delayed_information=0
 
-c0_request_arrival_file="hotos_6d9c26b9-request_arrival-cluster0.txt"
-c1_request_arrival_file="hotos_6d9c26b9-request_arrival-cluster1.txt"
+c0_request_arrival_file="request_arrival/hotos_6d9c26b9-request_arrival-cluster0.txt"
+c1_request_arrival_file="request_arrival/hotos_6d9c26b9-request_arrival-cluster1.txt"
 
 #for routing_algorithm in "LCLB"
 #for routing_algorithm in "heuristic_TE"
