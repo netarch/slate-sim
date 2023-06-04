@@ -204,10 +204,11 @@ class DAG:
         li = self.reverse_graph[svc]
         for elem in li:
             parent_services.append(elem['service'])
-        if LOG_MACRO: utils.print_log("DEBUG", svc.name + "'s parent services: ", end="")
-        for parent_svc in parent_services:
-            if LOG_MACRO: utils.print_log("DEBUG", parent_svc.name + ", ", end="")
-        if LOG_MACRO: utils.print_log("DEBUG", "")
+        if LOG_MACRO:
+            utils.print_log("DEBUG", svc.name + "'s parent services: ", end="")
+            for parent_svc in parent_services:
+                utils.print_log("DEBUG", parent_svc.name + ", ", end="")
+            utils.print_log("DEBUG", "")
         
         return parent_services
     
@@ -329,6 +330,8 @@ class Placement:
     def __init__(self):
         # TODO: This variable should be moved to class DAG
         self.svc_to_repl = dict() # It is not aware of multi-cluster. 
+        self.c0_svc_to_repl = dict()
+        self.c1_svc_to_repl = dict()
         self.total_num_replica = 0
         self.node_list = list()
         
@@ -344,7 +347,9 @@ class Placement:
         if repl_.service not in self.svc_to_repl:
             self.svc_to_repl[repl_.service] = list()
             if LOG_MACRO: utils.print_log("INFO", "place_replica_to_node_and_allocate_core, first time seen service {}".format(repl_.service.name))
+        ##############################################
         self.svc_to_repl[repl_.service].append(repl_)
+        ##############################################
         if LOG_MACRO: utils.print_log("INFO", "place_replica_to_node_and_allocate_core, {} to {}".format(repl_.to_str(), node_.to_str()))
         self.total_num_replica += 1
         
@@ -367,22 +372,20 @@ class Placement:
     def get_total_num_services(self):
         return len(self.svc_to_repl)
     
-    def get_number_replica(self, service_):
-        return len(self.svc_to_repl[service_])
-    
     def get_total_num_replicas(self):
         return self.total_num_replica
         
     def print(self):
-        if LOG_MACRO: utils.print_log("DEBUG", "")
-        if LOG_MACRO: utils.print_log("DEBUG", "="*40)
-        if LOG_MACRO: utils.print_log("DEBUG", "* Placement *")
-        for svc in self.svc_to_repl:
-            if LOG_MACRO: utils.print_log("DEBUG", svc.name+": ", end="")
-            for repl in self.svc_to_repl[svc]:
-                if LOG_MACRO: utils.print_log("DEBUG", repl.to_str(), end=", ")
-            if LOG_MACRO: utils.print_log("DEBUG", "")
-        if LOG_MACRO: utils.print_log("DEBUG", "="*40)
+        if LOG_MACRO:
+            utils.print_log("DEBUG", "")
+            utils.print_log("DEBUG", "="*40)
+            utils.print_log("DEBUG", "* Placement *")
+            for svc in self.svc_to_repl:
+                utils.print_log("DEBUG", svc.name+": ", end="")
+                for repl in self.svc_to_repl[svc]:
+                    utils.print_log("DEBUG", repl.to_str(), end=", ")
+                utils.print_log("DEBUG", "")
+            utils.print_log("DEBUG", "="*40)
 
 ''' placement (global variable)'''
 placement = Placement()
@@ -789,13 +792,14 @@ class Service:
         # WARNING: parent_replica should be parsed before the target replica gets removed from svc_to_repl.
         # Cluster 0 
         parent_service = dag.get_parent_services(target_repl.service)
-        for svc in parent_service:
-            if cluster_id == 0 and svc.name == "User1":
-                parent_service.remove(svc)
+        # User replica will not be removed so exclude it from parent service.
+        for p_svc in parent_service:
+            if cluster_id == 0 and p_svc.name == "User1":
+                parent_service.remove(p_svc)
                 if LOG_MACRO: utils.print_log("INFO", "\t\tExclude User1 from cluster {} {}'s parent service".format(cluster_id, target_repl.to_str()))
-            if cluster_id == 1 and svc.name == "User0":
+            if cluster_id == 1 and p_svc.name == "User0":
                 if LOG_MACRO: utils.print_log("INFO", "\t\tExclude User0 from cluster {} {}'s parent service".format(cluster_id, target_repl.to_str()))
-                parent_service.remove(svc)
+                parent_service.remove(p_svc)
         
         all_parent_replica = list()
         for p_svc in parent_service:
@@ -827,7 +831,6 @@ class Service:
         new_tot_num_repl = prev_tot_num_repl - how_many_scale_down # == desired
         if LOG_MACRO: utils.print_log("WARNING", "\nStart scale down(" + SCALEUP_POLICY + ") service" + self.name + "(cluster " + str(cluster_id) + ")")
         if LOG_MACRO: utils.print_log("WARNING", "\tCurrent total RPS: " + str(self.calc_rps(cluster_id)))
-        # if LOG_MACRO: utils.print_log("INFO", "\tCurrent total capacity: " + str(self.capacity_per_replica*self.get_cluster_num_replica(cluster_id)))
         if LOG_MACRO: utils.print_log("WARNING", "\tCurrent total live capacity: " + str(self.capacity_per_replica*self.count_cluster_live_replica(cluster_id)))
         if LOG_MACRO: utils.print_log("WARNING", "\tprev_tot_num_repl: " + str(prev_tot_num_repl))
         # if LOG_MACRO: utils.print_log("INFO", "\desired: " + str(desired))
@@ -836,8 +839,9 @@ class Service:
         
         sort_replica_list = self.sort_cluster_replica_by_least_request(cluster_id)
         if LOG_MACRO: utils.print_log("INFO", "Returned sorted_replica_list:")
-        for repl in sort_replica_list:
-            if LOG_MACRO: utils.print_log("INFO", "\t{}".format(repl.to_str()))
+        if LOG_MACRO: 
+            for repl in sort_replica_list:
+                utils.print_log("INFO", "\t{}".format(repl.to_str()))
         
         #############################################################################
         ################################ BUG BUG BUG ################################
@@ -854,16 +858,17 @@ class Service:
         # Filter already killed(dead) replica.
         filtered_replica_list = list()
         for repl in sort_replica_list:
-            if repl.is_dead:
-                if LOG_MACRO: utils.print_log("INFO", "Replica "+repl.to_str() + " has been already dead. It will be excluded from the candidate.")
-            else:
+            if repl.is_dead == False:
                 filtered_replica_list.append(repl)
+            else:
+                if LOG_MACRO: utils.print_log("INFO", "Replica "+repl.to_str() + " has been already dead. It will be excluded from the candidate.")
         if LOG_MACRO: utils.print_log("INFO", "")
         
-        if LOG_MACRO: utils.print_log("WARNING", "Filtered replica, sorted_replica_list:")
-        for repl in filtered_replica_list:
-            if LOG_MACRO: utils.print_log("WARNING", "\t{}".format(repl.to_str()))
-        if LOG_MACRO: utils.print_log("WARNING", "")
+        if LOG_MACRO: 
+            utils.print_log("WARNING", "Filtered replica, sorted_replica_list:")
+            for repl in filtered_replica_list:
+                utils.print_log("WARNING", "\t{}".format(repl.to_str()))
+            utils.print_log("WARNING", "")
         
         #############################################################################
         ################################ BUG BUG BUG ################################
@@ -920,23 +925,26 @@ class Service:
         if LOG_MACRO: utils.print_log("WARNING", "")
         
         
-        if LOG_MACRO: utils.print_log("WARNING", "Instant scale down of Ready replicas:")
-        for repl in instant_scale_down_replica:
-            if LOG_MACRO: utils.print_log("WARNING", "\t{}, {}, num_pending: {}, child_oustanding: {}".format(repl.to_str(), repl.get_status(), repl.num_pending_request, repl.get_total_num_outstanding_response()))
-        if LOG_MACRO: utils.print_log("WARNING", "")
+        if LOG_MACRO: 
+            utils.print_log("WARNING", "Instant scale down of Ready replicas:")
+            for repl in instant_scale_down_replica:
+                utils.print_log("WARNING", "\t{}, {}, num_pending: {}, child_oustanding: {}".format(repl.to_str(), repl.get_status(), repl.num_pending_request, repl.get_total_num_outstanding_response()))
+            utils.print_log("WARNING", "")
             
             
-        if LOG_MACRO: utils.print_log("WARNING", "Delaying scale down of Active replicas:")
-        for repl in delayed_scale_down_replica:
-            if LOG_MACRO: utils.print_log("WARNING", "\t{}, {}, is_dead:{}, num_pending: {}, child_oustanding: {}".format(repl.to_str(), repl.get_status(), repl.is_dead, repl.num_pending_request, repl.get_total_num_outstanding_response()))
-        if LOG_MACRO: utils.print_log("WARNING", "")
+        if LOG_MACRO: 
+            utils.print_log("WARNING", "Delaying scale down of Active replicas:")
+            for repl in delayed_scale_down_replica:
+                utils.print_log("WARNING", "\t{}, {}, is_dead:{}, num_pending: {}, child_oustanding: {}".format(repl.to_str(), repl.get_status(), repl.is_dead, repl.num_pending_request, repl.get_total_num_outstanding_response()))
+            utils.print_log("WARNING", "")
             
         for target_repl in instant_scale_down_replica:
             self.remove_target_replica(target_repl, cluster_id)
             
         # if LOG_MACRO: utils.print_log("INFO", "Finish scale down " + self.name + "(cluster " + str(cluster_id) + ") from " + str(prev_tot_num_repl) + " to " + str(self.get_cluster_num_replica(cluster_id)))
-        if LOG_MACRO: utils.print_log("WARNING", "Finish scale down " + self.name + "(cluster " + str(cluster_id) + ") from " + str(prev_tot_num_repl) + " to " + str(self.count_cluster_live_replica(cluster_id)))
-        if LOG_MACRO: utils.print_log("WARNING", "")
+        if LOG_MACRO: 
+            utils.print_log("WARNING", "Finish scale down " + self.name + "(cluster " + str(cluster_id) + ") from " + str(prev_tot_num_repl) + " to " + str(self.count_cluster_live_replica(cluster_id)))
+            utils.print_log("WARNING", "")
         # return self.get_cluster_num_replica(cluster_id)
         return self.count_cluster_live_replica(cluster_id)
 
@@ -1485,7 +1493,9 @@ class Replica:
 
 class Simulator:
     def __init__(self, req_arr_0, req_arr_1, cur_time, arg_flags):
-        self.dummy = list()
+        self.dummy = dict()
+        self.dummy[0] = dict()
+        self.dummy[1] = dict()
         
         self.request_arr_0 = req_arr_0
         self.request_arr_1 = req_arr_1
@@ -1904,9 +1914,14 @@ class LoadBalancing(Event):
         if ROUTING_ALGORITHM == "LCLB": # No multi-cluster
             superset_candidates = placement.svc_to_repl[self.dst_service]
             dst_replica_candidates = list()
+            
+            if self.dst_service.name not in simulator.dummy[0]:
+                simulator.dummy[0][self.dst_service.name] = list()
+            if self.dst_service.name not in simulator.dummy[1]:
+                simulator.dummy[1][self.dst_service.name] = list()
             # Cluster 0
             if self.src_replica.id%2 == 0:
-                simulator.dummy.append(len(superset_candidates))
+                simulator.dummy[0][self.dst_service.name].append([self.scheduled_time , len(superset_candidates)])
                 for repl in superset_candidates:
                      if repl.id%2 == 0:
                         if repl.is_dead == False:
@@ -1915,6 +1930,7 @@ class LoadBalancing(Event):
                             if LOG_MACRO: utils.print_log("INFO", "(LB), Replica "+repl.to_str()+" was dead. It will be excluded from lb dst candidate.")
             # Cluster 1
             elif self.src_replica.id%2 == 1:
+                simulator.dummy[1][self.dst_service.name].append([self.scheduled_time , len(superset_candidates)])
                 for repl in superset_candidates:
                      if repl.id%2 == 1:
                         if repl.is_dead == False:
@@ -3086,4 +3102,9 @@ if __name__ == "__main__":
     # dag.print_replica_num_request
     
     print("CNT_DELAYED_ROUTING: ", CNT_DELAYED_ROUTING)
-    plt.plot(simulator.dummy)
+    for svc in simulator.dummy[0]:
+        plt.plot(simulator.dummy[0][svc][0], simulator.dummy[0][svc][1], label=svc+" cluster0")
+    for svc in simulator.dummy[1]:
+        plt.plot(simulator.dummy[1][svc][0], simulator.dummy[1][svc][1], label=svc+" cluster1")
+    plt.legend(bbox_to_anchor=(1, 1), loc='upper left')
+    plt.show()
