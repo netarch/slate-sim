@@ -14,7 +14,7 @@ import time
 import logging
 from utils import utils
 import logging
-from memory_profiler import profile
+# from memory_profiler import profile
 
 
 #logging.basicConfig(level=logging.DEBUG)
@@ -124,14 +124,12 @@ class DAG:
                 for child_svc in repl.child_services:
                     if child_svc not in self.child_replica[repl]:
                         self.child_replica[repl][child_svc] = list()
-                    superset_replica = placement.svc_to_repl[child_svc]
+                    superset_replica = placement.svc_to_repl[repl.cluster_id][child_svc]
                     for child_repl in superset_replica:
                         # Hardcoded.
                         # TODO: The number of clusters should be able to be configurable.
-                        if repl.id%2 == 0 and child_repl.id%2 == 0: # local replica check.
-                            self.child_replica[repl][child_svc].append(child_repl)
-                        elif repl.id%2 == 1 and child_repl.id%2 == 1:
-                            self.child_replica[repl][child_svc].append(child_repl)
+                        assert repl.cluster_id == child_repl.cluster_id # local replica check.
+                        self.child_replica[repl][child_svc].append(child_repl)
                 
             # In Multi-cluster setup, a parent replica has all child replicas both in the local cluster and remote cluster.
             else:
@@ -140,7 +138,7 @@ class DAG:
                 for child_svc in repl.child_services:
                     if child_svc not in self.child_replica[repl]:
                         self.child_replica[repl][child_svc] = list()
-                    superset_replica = placement.svc_to_repl[child_svc]
+                    superset_replica = placement.get_all_svc_to_replica()
                     for child_repl in superset_replica:
                         self.child_replica[repl][child_svc].append(child_repl)
                             
@@ -185,12 +183,18 @@ class DAG:
     def get_parent_replica(self, repl, parent_svc):
         if ROUTING_ALGORITHM == "LCLB":
             p_replica = list()
-            for can_parent_repl in placement.svc_to_repl[parent_svc]:
-                if can_parent_repl.cluster_id == repl.cluster_id:
-                    p_replica.append(can_parent_repl)
+            p_repl_list = list()
+            try:
+                p_repl_list = placement.svc_to_repl[repl.cluster_id][parent_svc]
+            except:
+                print("Error, repl.cluster_id:{}, parent_svc: {}".format(repl.cluster_id, parent_svc.name))
+            for can_parent_repl in p_repl_list:
+                assert can_parent_repl.cluster_id == repl.cluster_id
+                p_replica.append(can_parent_repl)
+            
             return p_replica
         else:
-            return placement.svc_to_repl[parent_svc]
+            return placement.get_all_svc_to_replica()[parent_svc]
             
 
 
@@ -200,10 +204,12 @@ class DAG:
             if svc.name.find("User") == -1:
                 utils.error_handling(svc.name + "(non-User service) must have at least one parent service.")
             return None
+        
         parent_services = list()
         li = self.reverse_graph[svc]
         for elem in li:
             parent_services.append(elem['service'])
+            
         if LOG_MACRO:
             utils.print_log("DEBUG", svc.name + "'s parent services: ", end="")
             for parent_svc in parent_services:
@@ -329,9 +335,9 @@ E.g.
 class Placement:
     def __init__(self):
         # TODO: This variable should be moved to class DAG
-        self.svc_to_repl = dict() # It is not aware of multi-cluster. 
-        self.c0_svc_to_repl = dict()
-        self.c1_svc_to_repl = dict()
+        self.svc_to_repl = dict() # It is not aware of multi-cluster.
+        self.svc_to_repl[0] = dict() # cluster 0
+        self.svc_to_repl[1] = dict() # cluster 1
         self.total_num_replica = 0
         self.node_list = list()
         
@@ -344,11 +350,12 @@ class Placement:
         node_.place_replica_and_allocate_core(repl_, allocated_mcore_)
         # Allocate that num core to replica. (Now, replica has dedicated cores.)
         repl_.place_and_allocate(node_, allocated_mcore_)
-        if repl_.service not in self.svc_to_repl:
-            self.svc_to_repl[repl_.service] = list()
+        if repl_.service not in self.svc_to_repl[repl_.cluster_id]:
+            self.svc_to_repl[repl_.cluster_id][repl_.service] = list()
+            print("place_replica_to_node_and_allocate_core, first time seen service cluster{}-{}".format(repl_.cluster_id, repl_.service.name))
             if LOG_MACRO: utils.print_log("INFO", "place_replica_to_node_and_allocate_core, first time seen service {}".format(repl_.service.name))
         ##############################################
-        self.svc_to_repl[repl_.service].append(repl_)
+        self.svc_to_repl[repl_.cluster_id][repl_.service].append(repl_)
         ##############################################
         if LOG_MACRO: utils.print_log("INFO", "place_replica_to_node_and_allocate_core, {} to {}".format(repl_.to_str(), node_.to_str()))
         self.total_num_replica += 1
@@ -357,20 +364,16 @@ class Placement:
         for node_ in self.node_list:
             if target_repl in node_.placed_replicas:
                 node_.evict_replica_from_node(target_repl)
-                
-        ## DEBUG PRINT
-        # for service in self.svc_to_repl:
-        #     if LOG_MACRO: utils.print_log("INFO", "svc_to_repl[{}]:".format(service.name))
-        #     for repl in self.svc_to_repl[service]:
-        #         if LOG_MACRO: utils.print_log("INFO", "replica {}".format(repl.to_str()))
-                
         if LOG_MACRO: utils.print_log("INFO", "evict_replica_and_free_core, Evict replica {}, service {}".format(target_repl.to_str(), target_repl.service.name))
-        self.svc_to_repl[target_repl.service].remove(target_repl)
-        assert target_repl not in self.svc_to_repl[target_repl.service]
+        self.svc_to_repl[target_repl.cluster_id][target_repl.service].remove(target_repl)
+        assert target_repl not in self.svc_to_repl[target_repl.cluster_id][target_repl.service]
         self.total_num_replica -= 1
         
+    def get_all_svc_to_replica(self):
+        return self.svc_to_repl[0] | self.svc_to_repl[1]
+        
     def get_total_num_services(self):
-        return len(self.svc_to_repl)
+        return len(self.svc_to_repl[0]) +len(self.svc_to_repl[1])
     
     def get_total_num_replicas(self):
         return self.total_num_replica
@@ -380,12 +383,13 @@ class Placement:
             utils.print_log("DEBUG", "")
             utils.print_log("DEBUG", "="*40)
             utils.print_log("DEBUG", "* Placement *")
-            for svc in self.svc_to_repl:
-                utils.print_log("DEBUG", svc.name+": ", end="")
-                for repl in self.svc_to_repl[svc]:
-                    utils.print_log("DEBUG", repl.to_str(), end=", ")
-                utils.print_log("DEBUG", "")
-            utils.print_log("DEBUG", "="*40)
+            for i in [0, 1]:
+                for svc in self.svc_to_repl[i]:
+                    utils.print_log("DEBUG", svc.name+": ", end="")
+                    for repl in self.svc_to_repl[i][svc]:
+                        utils.print_log("DEBUG", repl.to_str(), end=", ")
+                    utils.print_log("DEBUG", "")
+                utils.print_log("DEBUG", "="*40)
 
 ''' placement (global variable)'''
 placement = Placement()
@@ -766,10 +770,11 @@ class Service:
                         new_repl.register_child_replica_2(child_repl)
                     
             ## DEBUG PRINT
-            for parent_service in dag.get_parent_services(new_repl.service):
-                if LOG_MACRO: utils.print_log("INFO", "provision, parent_service {}".format(parent_service.name))
-                for parent_repl in dag.get_parent_replica(new_repl, parent_service):
-                    if LOG_MACRO: utils.print_log("INFO", "\tprovision, parent_repl {}".format(parent_repl.to_str()))
+            if LOG_MACRO: 
+                for parent_service in dag.get_parent_services(new_repl.service):
+                    utils.print_log("INFO", "provision, parent_service {}".format(parent_service.name))
+                    for parent_repl in dag.get_parent_replica(new_repl, parent_service):
+                        utils.print_log("INFO", "\tprovision, parent_repl {}".format(parent_repl.to_str()))
                     
             for parent_service in dag.get_parent_services(new_repl.service):
                 for parent_repl in dag.get_parent_replica(new_repl, parent_service):
@@ -1912,7 +1917,7 @@ class LoadBalancing(Event):
         # Step 1 
         # If the static_lb rule is defined for User. static_lb is only for User.
         if ROUTING_ALGORITHM == "LCLB": # No multi-cluster
-            superset_candidates = placement.svc_to_repl[self.dst_service]
+            superset_candidates = placement.svc_to_repl[self.src_replica.cluster_id][self.dst_service]
             dst_replica_candidates = list()
             
             if self.dst_service.name not in simulator.dummy[0]:
@@ -1920,19 +1925,23 @@ class LoadBalancing(Event):
             if self.dst_service.name not in simulator.dummy[1]:
                 simulator.dummy[1][self.dst_service.name] = list()
             # Cluster 0
-            if self.src_replica.id%2 == 0:
+            if self.src_replica.cluster_id == 0:
                 simulator.dummy[0][self.dst_service.name].append([self.scheduled_time , len(superset_candidates)])
+                #########################################################
+                # TODO: overhead
+                #########################################################
                 for repl in superset_candidates:
-                     if repl.id%2 == 0:
+                     if repl.cluster_id == 0:
                         if repl.is_dead == False:
                             dst_replica_candidates.append(repl)
                         else:
                             if LOG_MACRO: utils.print_log("INFO", "(LB), Replica "+repl.to_str()+" was dead. It will be excluded from lb dst candidate.")
+                #########################################################
             # Cluster 1
-            elif self.src_replica.id%2 == 1:
+            elif self.src_replica.cluster_id == 1:
                 simulator.dummy[1][self.dst_service.name].append([self.scheduled_time , len(superset_candidates)])
                 for repl in superset_candidates:
-                     if repl.id%2 == 1:
+                     if repl.cluster_id == 1:
                         if repl.is_dead == False:
                             dst_replica_candidates.append(repl)
                         else:
@@ -1979,7 +1988,7 @@ class LoadBalancing(Event):
                         superset_candidates = local_candidate
                 
                 ## ERROR Handling    
-                verifying_superset_candidates = placement.svc_to_repl[self.dst_service]
+                verifying_superset_candidates = placement.svc_to_repl[self.src_replica.cluster_id][self.dst_service]
                 for repl in verifying_superset_candidates:
                     if repl not in local_candidate and repl not in remote_candidate:
                         utils.error_handling("replica {} is not included neither in local candidate nor in remote candidate.".format(repl.to_str()))
@@ -2003,7 +2012,7 @@ class LoadBalancing(Event):
             #   - remote replica, queue size 3: (40*2) + (3*100) + 100 = 480
             #   In this case, the request will be routed to the remote replica.
             
-            superset_candidates = placement.svc_to_repl[self.dst_service] # It returns every replica in the local and remote clusters.
+            superset_candidates = placement.get_all_svc_to_repl()
             moment_latency_list = list()
             for i in range(len(superset_candidates)):
                 mmt_latency = self.src_replica.calc_moment_latency(superset_candidates[i])
@@ -2041,7 +2050,7 @@ class LoadBalancing(Event):
             # It treats all replicas in the local and remote clusters equally.
             # It use configured base load balancer for every replicas in all clusters.
             # In other words, no smart routing.
-            superset_candidates = placement.svc_to_repl[self.dst_service]
+            superset_candidates = placement.get_all_svc_to_repl()
             
             ## DEBUG PRINT
             if LOG_MACRO: utils.print_log("INFO", "(LB) Dst superset:")
@@ -2794,8 +2803,8 @@ def one_service_application(load_balancer, init_num_repl_c0, init_num_repl_c1):
     return u_0, u_1, svc_a
 
 def three_depth_application(load_balancer, c0_req_arr, c1_req_arr):
-    user_0 = Service(name_="User0", mcore_per_req_=0, processing_t_=0, lb_=load_balancer)
-    user_1 = Service(name_="User1", mcore_per_req_=0, processing_t_=0, lb_=load_balancer)
+    user = Service(name_="User", mcore_per_req_=0, processing_t_=0, lb_=load_balancer)
+    # user_1 = Service(name_="User1", mcore_per_req_=0, processing_t_=0, lb_=load_balancer)
     svc_a = Service(name_="A", mcore_per_req_=1000, processing_t_=30, lb_=load_balancer) # H
     svc_b = Service(name_="B", mcore_per_req_=1000, processing_t_=10, lb_=load_balancer) # L
     svc_c = Service(name_="C", mcore_per_req_=1000, processing_t_=25, lb_=load_balancer) # M
@@ -2805,8 +2814,8 @@ def three_depth_application(load_balancer, c0_req_arr, c1_req_arr):
     # Currently it is assumed that cluster 0 and cluster 1 have the same application topology
     service_map = {"A":svc_a, "B":svc_b, "C":svc_c, "D":svc_d, "E":svc_e, "F":svc_f}
     
-    dag.add_service(user_0)
-    dag.add_service(user_1)
+    dag.add_service(user)
+    # dag.add_service(user_1)
     dag.add_service(svc_a)
     dag.add_service(svc_b)
     dag.add_service(svc_c)
@@ -2815,8 +2824,8 @@ def three_depth_application(load_balancer, c0_req_arr, c1_req_arr):
     dag.add_service(svc_f)
     
     # DAG
-    dag.add_dependency(parent_service=user_0, child_service=svc_a, weight=10)
-    dag.add_dependency(parent_service=user_1, child_service=svc_a, weight=10)
+    dag.add_dependency(parent_service=user, child_service=svc_a, weight=10)
+    # dag.add_dependency(parent_service=user_1, child_service=svc_a, weight=10)
     dag.add_dependency(parent_service=svc_a, child_service=svc_b, weight=10)
     dag.add_dependency(parent_service=svc_a, child_service=svc_c, weight=10)
     dag.add_dependency(parent_service=svc_a, child_service=svc_d, weight=10)
@@ -2826,8 +2835,8 @@ def three_depth_application(load_balancer, c0_req_arr, c1_req_arr):
     # Replica
     temp_all_replica = list()
     # Two users represent two clusters(multi-cluster).
-    u_0 = Replica(service=user_0, id=0)
-    u_1 = Replica(service=user_1, id=1)
+    u_0 = Replica(service=user, id=0)
+    u_1 = Replica(service=user, id=1)
     temp_all_replica.append(u_0)
     temp_all_replica.append(u_1)
     
@@ -3102,9 +3111,22 @@ if __name__ == "__main__":
     # dag.print_replica_num_request
     
     print("CNT_DELAYED_ROUTING: ", CNT_DELAYED_ROUTING)
+    ts0 = list()
+    sc_repl0 = list()
     for svc in simulator.dummy[0]:
-        plt.plot(simulator.dummy[0][svc][0], simulator.dummy[0][svc][1], label=svc+" cluster0")
+        for elem in simulator.dummy[0][svc]:
+            ts0.append(elem[0])
+            sc_repl0.append(elem[1])
+    ts1 = list()
+    sc_repl1 = list()
     for svc in simulator.dummy[1]:
-        plt.plot(simulator.dummy[1][svc][0], simulator.dummy[1][svc][1], label=svc+" cluster1")
+        for elem in simulator.dummy[1][svc]:
+            ts1.append(elem[0])
+            sc_repl1.append(elem[1])
+        
+    for svc in simulator.dummy[0]:
+        plt.plot(ts0, sc_repl0, label=svc+" cluster0", marker='x')
+    for svc in simulator.dummy[1]:
+        plt.plot(ts1, sc_repl1, label=svc+" cluster1", marker='x')
     plt.legend(bbox_to_anchor=(1, 1), loc='upper left')
     plt.show()
