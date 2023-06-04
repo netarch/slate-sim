@@ -14,9 +14,12 @@ import time
 import logging
 from utils import utils
 import logging
+from memory_profiler import profile
+
 
 #logging.basicConfig(level=logging.DEBUG)
 #logging.basicConfig(filename='logging_test2.log', filemode='w', format='%(name)s - %(levelname)s - %(message)s', level=logging.ERROR)
+
 
 LOG_MACRO=False
 
@@ -29,7 +32,6 @@ WARMUP_SIZE=200
 PROCESSING_TIME_SIGMA=5
 
 ''' Load(RPS) record parameter '''
-AUTOSCALER_INTRERVAL=15000 # 15sec
 MOST_RECENT_RPS_PERIOD=15000 # 15sec
 RPS_UPDATE_INTERVAL=1000 # 1sec just for the convenience. 1sec is aligned with RPS.
 NUM_BASKET=MOST_RECENT_RPS_PERIOD/RPS_UPDATE_INTERVAL
@@ -43,8 +45,7 @@ SCALE_DOWN_OVERHEAD=5000 # 5sec
 SCALE_DOWN_STABILIZE_WINDOW=300000 # kubernetes default: 300,000ms, 300sec, 5min
 SCALE_DOWN_STATUS=[1,1] # It keeps track of stabilization window status.
 
-CNT_DELAYED_ROUTING = 0 # hotos: 107128
-# $$ C_3(node[1000]) is delayed schedulable (1000d vs 0 at time 91.30701732449234 = 9949646.877520842-9949555.570503518)
+CNT_DELAYED_ROUTING = 0
 
 '''
 "graph" data structure.
@@ -1484,6 +1485,8 @@ class Replica:
 
 class Simulator:
     def __init__(self, req_arr_0, req_arr_1, cur_time, arg_flags):
+        self.dummy = list()
+        
         self.request_arr_0 = req_arr_0
         self.request_arr_1 = req_arr_1
         self.app = arg_flags.app
@@ -1526,6 +1529,7 @@ class Simulator:
         # create_key_with_service(self.cluster0_capacity)
         # create_key_with_service(self.cluster1_capacity)
         
+    # @profile
     def append_capacity_data_point(self, cluster_id, ts, svc):
         self.cluster_capacity[svc].append([cluster_id, ts, svc.count_cluster_live_replica(cluster_id), svc.capacity_per_replica, svc.get_total_capacity(cluster_id)])
         
@@ -1880,8 +1884,7 @@ class LoadBalancing(Event):
         return 0
         # return uniform(1,2)
         
-    # def find_dst_candidate_replica_set(self):
-
+    # @profile
     def execute_event(self):
         if LOG_MACRO: utils.print_log("INFO", "Start LB event! (src_replica: {})".format(self.src_replica.to_str()))
         if simulator.first_time_flag:
@@ -1898,27 +1901,12 @@ class LoadBalancing(Event):
         
         # Step 1 
         # If the static_lb rule is defined for User. static_lb is only for User.
-        # if self.src_replica.service.name.find("User") != -1:
-        #     if len(static_lb) != 0:
-        #         dst_replicas = placement.svc_to_repl[self.dst_service]
-        #         dst_replica_candidates = list()
-        #         dst_repl_idx_list = static_lb[self.src_replica.service.name]
-        #         # print(dst_repl_idx_list)
-        #         for repl_idx in dst_repl_idx_list:
-        #             dst_replica_candidates.append(dst_replicas[repl_idx])
-        #         # if LOG_MACRO: utils.print_log("DEBUG", "Static LB from "+self.src_replica.service.name + " to ")
-        #         # for repl in dst_replica_candidates:
-        #         #     print(repl.to_str())
-        #     # Otherwise, all replicas of the dst service will be included in lb candidate pool.
-        #     else:
-        #         dst_replica_candidates = placement.svc_to_repl[self.dst_service]
-            
-        # No multi-cluster
-        if ROUTING_ALGORITHM == "LCLB":
+        if ROUTING_ALGORITHM == "LCLB": # No multi-cluster
             superset_candidates = placement.svc_to_repl[self.dst_service]
             dst_replica_candidates = list()
             # Cluster 0
             if self.src_replica.id%2 == 0:
+                simulator.dummy.append(len(superset_candidates))
                 for repl in superset_candidates:
                      if repl.id%2 == 0:
                         if repl.is_dead == False:
@@ -2070,9 +2058,10 @@ class LoadBalancing(Event):
         # if LOG_MACRO: utils.print_log("DEBUG", "")
         
         
-        if LOG_MACRO: utils.print_log("DEBUG", self.src_replica.to_str())
-        for repl in dst_replica_candidates:
-            if LOG_MACRO: utils.print_log("DEBUG", "\t" + repl.to_str() + " outstanding queue size: " + str(self.src_replica.num_outstanding_response_from_child[repl]))
+        if LOG_MACRO: 
+            utils.print_log("DEBUG", self.src_replica.to_str())
+            for repl in dst_replica_candidates:
+                utils.print_log("DEBUG", "\t" + repl.to_str() + " outstanding queue size: " + str(self.src_replica.num_outstanding_response_from_child[repl]))
             
         assert len(dst_replica_candidates) > 0
         
@@ -3074,11 +3063,9 @@ if __name__ == "__main__":
             
     # Schedule autoscaling check event every 30 sec
     max_arrival_time = max(c0_request_arrival[-1], c1_request_arrival[-1])
-    # num_autoscale_check = int(max_arrival_time/AUTOSCALER_INTRERVAL)
     num_autoscale_check = int(max_arrival_time/simulator.arg_flags.autoscaler_period)
     for i in range(num_autoscale_check):
         if i > 5:
-            # simulator.schedule_event(AutoscalerCheck(AUTOSCALER_INTRERVAL*i))
             simulator.schedule_event(AutoscalerCheck(simulator.arg_flags.autoscaler_period*i))
             
     # Schedule UpdateRPS every RPS_UPDATE_INTERVAL sec
@@ -3099,3 +3086,4 @@ if __name__ == "__main__":
     # dag.print_replica_num_request
     
     print("CNT_DELAYED_ROUTING: ", CNT_DELAYED_ROUTING)
+    plt.plot(simulator.dummy)
