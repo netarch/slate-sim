@@ -44,6 +44,9 @@ CONFIG["SCALE_UP_OVERHEAD"]=5000
 CONFIG["SCALE_DOWN_OVERHEAD"]=5000
 CONFIG["SCALE_DOWN_STABILIZE_WINDOW"]=300000 # 5min
 CONFIG["SCALE_DOWN_STATUS"]=[1,1] # It keeps track of stabilization window status.
+## Stabilization window concept in k8s
+# While scaling down, we should pick the safest (largest) "desiredReplicas" number during last stabilizationWindowSeconds.
+# While scaling up, we should pick the safest (smallest) "desiredReplicas" number during last stabilizationWindowSeconds.
 
 CONFIG["CNT_DELAYED_ROUTING"]=0
 
@@ -513,6 +516,7 @@ class Service:
                     if LOG_MACRO: utils.print_log("DEBUG", "num_delayed_schedulable_replica, cluster {} has schedulable replica for service {}".format(cluster_id, self.name))
         return delayed_schd_cluster_replica, num_delayed_schd_cluster_replica
     
+
     def should_we_scale_down(self, cluster_id):
         desired = self.calc_desired_num_replica(cluster_id)
         # cur_tot_num_repl = self.get_cluster_num_replica(cluster_id) # BUG
@@ -651,7 +655,7 @@ class Service:
         return metric
     
     def what_I_was_supposed_to_receive(self, cluster_id):
-        my_local_rps = self.calc_local_rps(cluster_id)
+        my_local_rps = self.calc_avg_local_rps(cluster_id)
         if cluster_id == 0:
             other_cluster_id = 1
         else:
@@ -662,7 +666,7 @@ class Service:
         return imaginary_metric
     
     def get_local_rps_current_metric(self, cluster_id):
-        cur_rps = self.calc_local_rps(cluster_id)
+        cur_rps = self.calc_avg_local_rps(cluster_id)
         total_capa = self.get_total_capacity(cluster_id)
         metric = cur_rps / total_capa
         if LOG_MACRO: utils.print_log("WARNING", "get_current_metric service {} in cluster_{}, metric: {}, calc_rps: {}, total_capacity: {}".format(self.name, cluster_id, metric, cur_rps, total_capa))
@@ -694,28 +698,28 @@ class Service:
     
     # It calculates the num of requests that come from replicas having the same cluster id. 
     # Since this is a method in service class, it adds up its all replicas' local rps.
-    def calc_local_rps(self, cluster_id):
+    def calc_avg_local_rps(self, cluster_id):
         tot_rps = 0
-        for repl in self.get_cluster_replica(cluster_id):
+        for repl in self.get_cluster_live_replica(cluster_id):
             tot_rps += repl.get_most_recent_local_rps()
         return tot_rps
     
     def calc_remote_rps(self, cluster_id):
         tot_rps = 0
-        for repl in self.get_cluster_replica(cluster_id):
-            tot_rps += repl.get_most_recent_remote_rps()
+        for repl in self.get_cluster_live_replica(cluster_id):
+            tot_rps += repl.get_avg_remote_rps()
         return tot_rps
     
-    def calc_origin_rps(self, cluster_id):
+    def calc_origin_avg_rps(self, cluster_id):
         tot_rps = 0
-        for repl in self.get_cluster_replica(cluster_id):
-            tot_rps += repl.get_most_recent_origin_rps()
+        for repl in self.get_cluster_live_replica(cluster_id):
+            tot_rps += repl.get_avg_origin_rps()
         return tot_rps
     
-    def calc_non_origin_rps(self, cluster_id):
+    def calc_non_origin_avg_rps(self, cluster_id):
         tot_rps = 0
-        for repl in self.get_cluster_replica(cluster_id):
-            tot_rps += repl.get_most_recent_non_origin_rps()
+        for repl in self.get_cluster_live_replica(cluster_id):
+            tot_rps += repl.get_avg_remote_rps()
         return tot_rps
     
     ## Deprecated
@@ -1212,22 +1216,22 @@ class Replica:
             return 0
         return self.req_count_list[-1]
     
-    def get_most_recent_local_rps(self):
+    def get_avg_local_rps(self):
         if len(self.local_req_count_list) == 0:
             return 0
         return sum(self.local_req_count_list)/len(self.local_req_count_list)
     
-    def get_most_recent_remote_rps(self):
+    def get_avg_remote_rps(self):
         if len(self.remote_req_count_list) == 0:
             return 0
         return sum(self.remote_req_count_list)/len(self.remote_req_count_list)
     
-    def get_most_recent_origin_rps(self):
+    def get_avg_origin_rps(self):
         if len(self.origin_req_count_list) == 0:
             return 0
         return sum(self.origin_req_count_list)/len(self.origin_req_count_list)
     
-    def get_most_recent_non_origin_rps(self):
+    def get_avg_non_origin_rps(self):
         if len(self.non_origin_req_count_list) == 0:
             return 0
         return sum(self.non_origin_req_count_list)/len(self.non_origin_req_count_list)
