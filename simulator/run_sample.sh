@@ -3,9 +3,9 @@
 output_dir="log"
 app="three_depth"
 load_balancer="RoundRobin"
-workload="sample"
+workload="sample-opt_opt_te_metric25-3"
 fixed_autoscaler=0
-autoscaler_period=15
+autoscaler_period=15000
 delayed_information=1
 c0_request_arrival_file="request_arrival/sample-request_arrival-cluster0.txt"
 c1_request_arrival_file="request_arrival/sample-request_arrival-cluster1.txt"
