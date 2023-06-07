@@ -20,32 +20,32 @@ import logging
 #logging.basicConfig(level=logging.DEBUG)
 #logging.basicConfig(filename='logging_test2.log', filemode='w', format='%(name)s - %(levelname)s - %(message)s', level=logging.ERROR)
 
-
-LOG_MACRO=False
-
 np.random.seed(1234)
 
-ROUTING_ALGORITHM=None
+LOG_MACRO=False # not in CONFIG dictionary for convenience.
 
-MA_WINDOW_SIZE="Uninitialized"
-WARMUP_SIZE=200
-PROCESSING_TIME_SIGMA=5
+CONFIG = dict()
+CONFIG["ROUTING_ALGORITHM"]=None
+
+CONFIG["MA_WINDOW_SIZE"]="Uninitialized"
+CONFIG["WARMUP_SIZE"]=200
+CONFIG["PROCESSING_TIME_SIGMA"]=5
 
 ''' Load(RPS) record parameter '''
-MOST_RECENT_RPS_PERIOD=15000 # 15sec
-RPS_UPDATE_INTERVAL=1000 # 1sec just for the convenience. 1sec is aligned with RPS.
-NUM_BASKET=MOST_RECENT_RPS_PERIOD/RPS_UPDATE_INTERVAL
+CONFIG["MOST_RECENT_RPS_PERIOD"]=15000
+CONFIG["RPS_UPDATE_INTERVAL"]=1000 # 1sec just for the convenience. 1sec is aligned with RPS.
+CONFIG["NUM_BASKET"]=CONFIG["MOST_RECENT_RPS_PERIOD"]/CONFIG["RPS_UPDATE_INTERVAL"]
 
 ''' Autoscaler parameter '''
-SCALEUP_POLICY="kubernetes"
-SCALEDOWN_POLICY="kubernetes"
-DESIRED_METRIC_VALUE=0.5 # You want to keep the cpu util to 50% basically.
-SCALE_UP_OVERHEAD=5000 # 5sec
-SCALE_DOWN_OVERHEAD=5000 # 5sec
-SCALE_DOWN_STABILIZE_WINDOW=300000 # kubernetes default: 300,000ms, 300sec, 5min
-SCALE_DOWN_STATUS=[1,1] # It keeps track of stabilization window status.
+CONFIG["SCALEUP_POLICY"]="kubernetes"
+CONFIG["SCALEDOWN_POLICY"]="kubernetes" # not being used
+CONFIG["DESIRED_METRIC_VALUE"]=0.25 # You want to keep the cpu util to 50% basically.
+CONFIG["SCALE_UP_OVERHEAD"]=5000
+CONFIG["SCALE_DOWN_OVERHEAD"]=5000
+CONFIG["SCALE_DOWN_STABILIZE_WINDOW"]=300000 # 5min
+CONFIG["SCALE_DOWN_STATUS"]=[1,1] # It keeps track of stabilization window status.
 
-CNT_DELAYED_ROUTING = 0
+CONFIG["CNT_DELAYED_ROUTING"]=0
 
 '''
 "graph" data structure.
@@ -118,13 +118,15 @@ class DAG:
         self.all_replica.append(repl)
         if self.is_leaf(repl.service) is False:
             # In segregated cluster setup, a replica can only recognize replicas in the local cluster only.
-            if ROUTING_ALGORITHM == "LCLB":
+            if CONFIG["ROUTING_ALGORITHM"] == "LCLB":
                 if repl not in self.child_replica:
                     self.child_replica[repl] = dict()
                 for child_svc in repl.child_services:
                     if child_svc not in self.child_replica[repl]:
                         self.child_replica[repl][child_svc] = list()
+                    #########################################################
                     superset_replica = placement.svc_to_repl[repl.cluster_id][child_svc]
+                    #########################################################
                     for child_repl in superset_replica:
                         # Hardcoded.
                         # TODO: The number of clusters should be able to be configurable.
@@ -138,10 +140,12 @@ class DAG:
                 for child_svc in repl.child_services:
                     if child_svc not in self.child_replica[repl]:
                         self.child_replica[repl][child_svc] = list()
-                    superset_replica = placement.get_all_svc_to_replica()
-                    for child_repl in superset_replica:
+                    ################################################
+                    superset_child_replica = placement.all_svc_to_repl[child_svc]
+                    ################################################
+                    for child_repl in superset_child_replica:
+                        if LOG_MACRO: utils.print_log("WARNING", "{}'s {} childe: {}".format(repl.to_str(), child_svc.name, child_repl.to_str()))
                         self.child_replica[repl][child_svc].append(child_repl)
-                            
                             
     def deregister_replica(self, target_repl):
         if target_repl in self.child_replica:
@@ -172,16 +176,17 @@ class DAG:
         li = self.graph[parent_svc]
         for elem in li:
             child_services.append(elem['service'])
-        if LOG_MACRO: utils.print_log("DEBUG", parent_svc.name + "'s child services: ", end="")
-        for child_svc in child_services:
-            if LOG_MACRO: utils.print_log("DEBUG", child_svc.name + ", ", end="")
-        if LOG_MACRO: utils.print_log("DEBUG", "")
+        if LOG_MACRO: 
+            utils.print_log("DEBUG", parent_svc.name + "'s child services: ", end="")
+            for child_svc in child_services:
+                utils.print_log("DEBUG", child_svc.name + ", ", end="")
+            utils.print_log("DEBUG", "")
         return child_services
     
     
     # Multi-cluster aware function!!!
     def get_parent_replica(self, repl, parent_svc):
-        if ROUTING_ALGORITHM == "LCLB":
+        if CONFIG["ROUTING_ALGORITHM"] == "LCLB":
             p_replica = list()
             p_repl_list = list()
             try:
@@ -194,7 +199,7 @@ class DAG:
             
             return p_replica
         else:
-            return placement.get_all_svc_to_replica()[parent_svc]
+            return placement.all_svc_to_repl[parent_svc]
             
 
 
@@ -335,7 +340,9 @@ E.g.
 class Placement:
     def __init__(self):
         # TODO: This variable should be moved to class DAG
-        self.svc_to_repl = dict() # It is not aware of multi-cluster.
+        self.all_svc_to_repl = dict() # It is not aware of multi-cluster.
+        ## Hardcoded. Only two cluster currently.
+        self.svc_to_repl = dict() # cluster 0
         self.svc_to_repl[0] = dict() # cluster 0
         self.svc_to_repl[1] = dict() # cluster 1
         self.total_num_replica = 0
@@ -350,11 +357,14 @@ class Placement:
         node_.place_replica_and_allocate_core(repl_, allocated_mcore_)
         # Allocate that num core to replica. (Now, replica has dedicated cores.)
         repl_.place_and_allocate(node_, allocated_mcore_)
+        
+        if repl_.service not in self.all_svc_to_repl:
+            self.all_svc_to_repl[repl_.service] = list()
         if repl_.service not in self.svc_to_repl[repl_.cluster_id]:
             self.svc_to_repl[repl_.cluster_id][repl_.service] = list()
-            print("place_replica_to_node_and_allocate_core, first time seen service cluster{}-{}".format(repl_.cluster_id, repl_.service.name))
-            if LOG_MACRO: utils.print_log("INFO", "place_replica_to_node_and_allocate_core, first time seen service {}".format(repl_.service.name))
+            
         ##############################################
+        self.all_svc_to_repl[repl_.service].append(repl_)
         self.svc_to_repl[repl_.cluster_id][repl_.service].append(repl_)
         ##############################################
         if LOG_MACRO: utils.print_log("INFO", "place_replica_to_node_and_allocate_core, {} to {}".format(repl_.to_str(), node_.to_str()))
@@ -369,12 +379,6 @@ class Placement:
         assert target_repl not in self.svc_to_repl[target_repl.cluster_id][target_repl.service]
         self.total_num_replica -= 1
         
-    def get_all_svc_to_replica(self):
-        return self.svc_to_repl[0] | self.svc_to_repl[1]
-        
-    def get_total_num_services(self):
-        return len(self.svc_to_repl[0]) +len(self.svc_to_repl[1])
-    
     def get_total_num_replicas(self):
         return self.total_num_replica
         
@@ -446,7 +450,7 @@ class Service:
         self.lb = lb_
         self.replicas = list()
         if self.processing_time == 0:
-            self.capacity_per_replica = 9999
+            self.capacity_per_replica = 99999999
         else:
             self.capacity_per_replica = 1000 / self.processing_time
         print(self.name + " capacity: " + str(self.capacity_per_replica))
@@ -481,30 +485,34 @@ class Service:
     #     else:
     #         utils.error_handling(SCALEUP_POLICY + " is not supported.")
     
-    def has_schedulable_replica(self, cluster_id):
+    def num_schedulable_and_zero_queue_replica(self, cluster_id):
+        schedulable_replicas = list()
+        zero_queue_replicas = list()
+        num_schedulable_cluster_replica = 0
+        num_zero_queue_replica = 0
         for repl in self.replicas:
             if repl.cluster_id == cluster_id and repl.is_dead == False:
                 if repl.is_schedulable():
-                    if LOG_MACRO: utils.print_log("DEBUG", "has_schedulable_replica, cluster {} has schedulable replica for service {}".format(cluster_id, self.name))
-                    return True
-        return False
+                    num_schedulable_cluster_replica += 1
+                    schedulable_replicas.append(repl)
+                    if LOG_MACRO: utils.print_log("DEBUG", "cluster{}-service {} has schedulable replica {}".format(cluster_id, self.name, repl.to_str()))
+                if repl.processing_queue_size == 0:
+                    num_zero_queue_replica += 1
+                    zero_queue_replicas.append(repl)
+                    if LOG_MACRO: utils.print_log("DEBUG", "has_zero_queue_replica, cluster {} has zero processing queue replica for service {}".format(cluster_id, self.name))
+        return schedulable_replicas, zero_queue_replicas, num_schedulable_cluster_replica, num_zero_queue_replica
     
-    def has_delayed_schedulable_replica(self, cluster_id, t_):
+    def num_delayed_schedulable_replica(self, cluster_id, t_):
+        delayed_schd_cluster_replica = list()
+        num_delayed_schd_cluster_replica = 0
         for repl in self.replicas:
             if repl.cluster_id == cluster_id and repl.is_dead == False:
                 if repl.is_delayed_schedulable(t_):
-                    if LOG_MACRO: utils.print_log("DEBUG", "has_delayed_schedulable_replica, cluster {} has schedulable replica for service {}".format(cluster_id, self.name))
-                    return True
-        return False
+                    delayed_schd_cluster_replica.append(repl)
+                    num_delayed_schd_cluster_replica += 1
+                    if LOG_MACRO: utils.print_log("DEBUG", "num_delayed_schedulable_replica, cluster {} has schedulable replica for service {}".format(cluster_id, self.name))
+        return delayed_schd_cluster_replica, num_delayed_schd_cluster_replica
     
-    def has_zero_queue_replica(self, cluster_id):
-        for repl in self.replicas:
-            if repl.cluster_id == cluster_id and repl.is_dead == False:
-                if repl.processing_queue_size == 0:
-                    if LOG_MACRO: utils.print_log("WARNING", "has_zero_queue_replica, cluster {} has zero processing queue replica for service {}".format(cluster_id, self.name))
-                    return True
-        return False
-            
     def should_we_scale_down(self, cluster_id):
         desired = self.calc_desired_num_replica(cluster_id)
         # cur_tot_num_repl = self.get_cluster_num_replica(cluster_id) # BUG
@@ -585,21 +593,20 @@ class Service:
             # current_metric_value = self.get_current_metric(cluster_id)
             current_metric_value = self.get_current_live_replica_metric(cluster_id)
         
-        # desired_num_replica = math.ceil((current_metric_value / DESIRED_METRIC_VALUE) * self.get_cluster_num_replica(cluster_id))
-        desired_num_replica = math.ceil((current_metric_value / DESIRED_METRIC_VALUE) * self.count_cluster_live_replica(cluster_id))
-        if LOG_MACRO: utils.print_log("WARNING", "Calculate desired_num_replica of " + self.name + " in cluster_" + str(cluster_id))
-        if LOG_MACRO: utils.print_log("WARNING", "current_metric_value, " + str((current_metric_value)))
-        if LOG_MACRO: utils.print_log("WARNING", "DESIRED_METRIC_VALUE, " + str((DESIRED_METRIC_VALUE)))
-        # if LOG_MACRO: utils.print_log("INFO", "current total num replica in cluster " + str(cluster_id) + ", " + str(self.get_cluster_num_replica(cluster_id)))
-
-        if LOG_MACRO: utils.print_log("INFO", "(current_metric_value / DESIRED_METRIC_VALUE), " + str((current_metric_value / DESIRED_METRIC_VALUE)))
-        # if LOG_MACRO: utils.print_log("INFO", "current_num_replica, " + str(self.get_cluster_num_replica(cluster_id)))
-        if LOG_MACRO: utils.print_log("WARNING", "current_num_replica, " + str(self.count_cluster_live_replica(cluster_id)))
-        if LOG_MACRO: utils.print_log("WARNING", "desired_num_replica, " + str(desired_num_replica))
+        # desired_num_replica = math.ceil((current_metric_value / CONFIG["DESIRED_METRIC_VALUE"]) * self.get_cluster_num_replica(cluster_id))
+        desired_num_replica = math.ceil((current_metric_value / CONFIG["DESIRED_METRIC_VALUE"]) * self.count_cluster_live_replica(cluster_id))
+        if LOG_MACRO:
+            utils.print_log("WARNING", "Calculate desired_num_replica of " + self.name + " in cluster_" + str(cluster_id))
+            utils.print_log("WARNING", "current_metric_value, " + str((current_metric_value)))
+            utils.print_log("WARNING", "DESIRED_METRIC_VALUE, " + str((CONFIG["DESIRED_METRIC_VALUE"])))
+            # utils.print_log("INFO", "current total num replica in cluster " + str(cluster_id) + ", " + str(self.get_cluster_num_replica(cluster_id)))
+            utils.print_log("INFO", "(current_metric_value / DESIRED_METRIC_VALUE), " + str((current_metric_value / CONFIG["DESIRED_METRIC_VALUE"])))
+            # utils.print_log("INFO", "current_num_replica, " + str(self.get_cluster_num_replica(cluster_id)))
+            utils.print_log("WARNING", "current_num_replica, " + str(self.count_cluster_live_replica(cluster_id)))
+            utils.print_log("WARNING", "desired_num_replica, " + str(desired_num_replica))
         if desired_num_replica == 0:
             if LOG_MACRO: utils.print_log("WARNING", "0 number of replica is not possible. Return minimun num replica(1).")
             return 1
-        if LOG_MACRO: utils.print_log("WARNING", "")
         return desired_num_replica
     
     
@@ -612,30 +619,32 @@ class Service:
     
     
     ## Not being used.
-    def remaining_capacity_based_on_rps_window(self, cluster_id):
-        remaining_capa = self.get_total_capacity(cluster_id) - self.calc_rps(cluster_id)
-        if LOG_MACRO: utils.print_log("WARNING", "service {}, cluster:{}, remaining_capacity: {} = self.get_total_capacity: {} - current_rps: {}".format(self.name, cluster_id, remaining_capa, self.get_total_capacity(cluster_id), self.calc_rps(cluster_id)))
-        return remaining_capa
+    # def remaining_capacity_based_on_rps_window(self, cluster_id):
+    #     remaining_capa = self.get_total_capacity(cluster_id) - self.calc_rps(cluster_id)
+    #     if LOG_MACRO: utils.print_log("WARNING", "service {}, cluster:{}, remaining_capacity: {} = self.get_total_capacity: {} - current_rps: {}".format(self.name, cluster_id, remaining_capa, self.get_total_capacity(cluster_id), self.calc_rps(cluster_id)))
+    #     return remaining_capa
     
     ## Not being used.
-    def remaining_capacity_based_on_last_sec(self, cluster_id):
-        cur_capa = self.get_total_capacity(cluster_id)
-        last_sec_rps = self.calc_last_sec_service_rps(cluster_id)
-        remaining_capa = cur_capa - last_sec_rps
-        if LOG_MACRO: utils.print_log("WARNING", "service {}, cluster:{}, remaining_capacity: {} = self.get_total_capacity: {} - last_sec_rps: {}".format(self.name, cluster_id, remaining_capa, cur_capa, last_sec_rps))
-        return remaining_capa
+    # def remaining_capacity_based_on_last_sec(self, cluster_id):
+    #     cur_capa = self.get_total_capacity(cluster_id)
+    #     last_sec_rps = self.calc_last_sec_service_rps(cluster_id)
+    #     remaining_capa = cur_capa - last_sec_rps
+    #     if LOG_MACRO: utils.print_log("WARNING", "service {}, cluster:{}, remaining_capacity: {} = self.get_total_capacity: {} - last_sec_rps: {}".format(self.name, cluster_id, remaining_capa, cur_capa, last_sec_rps))
+    #     return remaining_capa
 
     # Previously,this was used to calculate desired num replica, which was a bug.
-    def get_current_metric(self, cluster_id):
-        cur_rps = self.calc_rps(cluster_id)
-        total_capa = self.get_total_capacity(cluster_id)
-        metric = cur_rps / total_capa
-        if LOG_MACRO: utils.print_log("WARNING", "get_current_metric service {} in cluster_{}, metric: {}, calc_rps: {}, total_capacity: {}".format(self.name, cluster_id, metric, cur_rps, total_capa))
-        return metric
+    # def get_current_metric(self, cluster_id):
+    #     cur_rps = self.calc_rps(cluster_id)
+    #     total_capa = self.get_total_capacity(cluster_id)
+    #     metric = cur_rps / total_capa
+    #     if LOG_MACRO: utils.print_log("WARNING", "get_current_metric service {} in cluster_{}, metric: {}, calc_rps: {}, total_capacity: {}".format(self.name, cluster_id, metric, cur_rps, total_capa))
+    #     return metric
     
+    ## NOTE: This function represents CPU utilization.
     # It is used by calc_desired_num_replica function
     def get_current_live_replica_metric(self, cluster_id):
-        cur_rps = self.calc_live_replica_rps(cluster_id)
+        # cur_rps = self.calc_avg_rps_of_live_replica(cluster_id) ## It was the previously used line.
+        cur_rps = self.calc_last_sec_rps_of_live_replica(cluster_id) ## new line
         total_capa = self.get_total_capacity(cluster_id)
         metric = cur_rps / total_capa
         if LOG_MACRO: utils.print_log("WARNING", "get_current_live_replica_metric service {} in cluster_{}, metric: {}, calc_rps: {}, total_capacity: {}".format(self.name, cluster_id, metric, cur_rps, total_capa))
@@ -659,25 +668,28 @@ class Service:
         if LOG_MACRO: utils.print_log("WARNING", "get_current_metric service {} in cluster_{}, metric: {}, calc_rps: {}, total_capacity: {}".format(self.name, cluster_id, metric, cur_rps, total_capa))
         return metric
     
+    ## Deprecated
     # It should change the name to "calc_cluster_load_based_on_rps_windows"
-    def calc_rps(self, cluster_id): # This is the actual rps
-        tot_rps = 0
-        for repl in self.get_cluster_replica(cluster_id):
-            tot_rps += repl.get_avg_rps()
-        return tot_rps
+    # def calc_rps(self, cluster_id): # This is the actual rps
+    #     tot_rps = 0
+    #     for repl in self.get_cluster_replica(cluster_id):
+    #         tot_rps += repl.get_avg_rps()
+    #     return tot_rps
+    
     
     # It is used by calc_desired_num_replica function
     # This is the actual RPS!
-    def calc_live_replica_rps(self, cluster_id):
+    # It will be used to calculate current metric and it take the average of the last MOST_RECENT_RPS_PERIOD second
+    def calc_avg_rps_of_live_replica(self, cluster_id):
         tot_rps = 0
         for repl in self.get_cluster_live_replica(cluster_id):
             tot_rps += repl.get_avg_rps()
         return tot_rps
     
-    def calc_last_sec_service_rps(self, cluster_id): # This is the actual rps
+    def calc_last_sec_rps_of_live_replica(self, cluster_id): # This is the actual rps
         tot_rps = 0
-        for repl in self.get_cluster_replica(cluster_id):
-            tot_rps += repl.get_last_sec_rps()
+        for repl in self.get_cluster_live_replica(cluster_id):
+            tot_rps += repl.get_last_sec_rps() # the most recent rps
         return tot_rps
     
     # It calculates the num of requests that come from replicas having the same cluster id. 
@@ -706,10 +718,11 @@ class Service:
             tot_rps += repl.get_most_recent_non_origin_rps()
         return tot_rps
     
-    def calc_required_num_replica(self, cluster_id):
-        tot_rps = self.calc_rps(cluster_id)
-        tot_required_min_num_replica = math.ceil(tot_rps / self.capacity_per_replica)
-        return tot_required_min_num_replica
+    ## Deprecated
+    # def calc_required_num_replica(self, cluster_id):
+    #     tot_rps = self.calc_rps(cluster_id)
+    #     tot_required_min_num_replica = math.ceil(tot_rps / self.capacity_per_replica)
+    #     return tot_required_min_num_replica
     
     def get_last_replica_id(self, cluster_id):
         biggest_id = -1
@@ -719,11 +732,11 @@ class Service:
         return biggest_id
     
     def provision(self, how_many, cluster_id):
-        if LOG_MACRO: utils.print_log("WARNING", "\nStart provision(" + SCALEUP_POLICY + ") service" + self.name + "(cluster " + str(cluster_id) + ")")
+        if LOG_MACRO: utils.print_log("WARNING", "\nStart provision(" + CONFIG["SCALEUP_POLICY"] + ") service" + self.name + "(cluster " + str(cluster_id) + ")")
         # prev_tot_num_repl = self.get_cluster_num_replica(cluster_id)
         prev_tot_num_repl = self.count_cluster_live_replica(cluster_id)
-        min_required_num_repl = self.calc_required_num_replica(cluster_id)
-        if SCALEUP_POLICY == "kubernetes":
+        # min_required_num_repl = self.calc_required_num_replica(cluster_id)
+        if CONFIG["SCALEUP_POLICY"] == "kubernetes":
             ### BUG: There is a gap between the time that overloaded condition was tested and the time that provision calculate the desired num replica with more recent RPS.
             # # Desired metric based calculation
             # # Usually it is more aggressive than doubleup.
@@ -732,17 +745,18 @@ class Service:
             # assert how_many_scale_up > 0
             how_many_scale_up = how_many # NOTE: provision already received Kubernetes policy based how_many parameter. 
         else:
-            utils.error_handling(SCALEUP_POLICY  + " is not supported.")
+            utils.error_handling(CONFIG["SCALEUP_POLICY"]  + " is not supported.")
             
         new_tot_num_repl = prev_tot_num_repl + how_many_scale_up
         
-        if LOG_MACRO: utils.print_log("WARNING", "\tCurrent total RPS: " + str(self.calc_rps(cluster_id)))
-        # if LOG_MACRO: utils.print_log("INFO", "\tCurrent total capacity: " + str(self.capacity_per_replica*self.get_cluster_num_replica(cluster_id)))
-        if LOG_MACRO: utils.print_log("WARNING", "\tCurrent total live capacity: " + str(self.capacity_per_replica*self.count_cluster_live_replica(cluster_id)))
-        if LOG_MACRO: utils.print_log("WARNING", "\tprev_tot_num_repl: " + str(prev_tot_num_repl))
-        if LOG_MACRO: utils.print_log("WARNING", "\tmin_required_num_repl: " + str(min_required_num_repl))
-        if LOG_MACRO: utils.print_log("WARNING", "\thow_many_scale_up: " + str(how_many_scale_up))
-        if LOG_MACRO: utils.print_log("WARNING", "\tnew_tot_num_repl: " + str(new_tot_num_repl))
+        if LOG_MACRO: 
+            # utils.print_log("WARNING", "\tCurrent total RPS: " + str(self.calc_rps(cluster_id)))
+            # if LOG_MACRO: utils.print_log("INFO", "\tCurrent total capacity: " + str(self.capacity_per_replica*self.get_cluster_num_replica(cluster_id)))
+            utils.print_log("WARNING", "\tCurrent total live capacity: " + str(self.capacity_per_replica*self.count_cluster_live_replica(cluster_id)))
+            utils.print_log("WARNING", "\tprev_tot_num_repl: " + str(prev_tot_num_repl))
+            # utils.print_log("WARNING", "\tmin_required_num_repl: " + str(min_required_num_repl))
+            utils.print_log("WARNING", "\thow_many_scale_up: " + str(how_many_scale_up))
+            utils.print_log("WARNING", "\tnew_tot_num_repl: " + str(new_tot_num_repl))
         next_replica_id = self.get_last_replica_id(cluster_id) + 2            
             
         for _ in range(how_many_scale_up):
@@ -797,6 +811,7 @@ class Service:
         # WARNING: parent_replica should be parsed before the target replica gets removed from svc_to_repl.
         # Cluster 0 
         parent_service = dag.get_parent_services(target_repl.service)
+        ##########################################################################################
         # User replica will not be removed so exclude it from parent service.
         for p_svc in parent_service:
             if cluster_id == 0 and p_svc.name == "User1":
@@ -805,6 +820,7 @@ class Service:
             if cluster_id == 1 and p_svc.name == "User0":
                 if LOG_MACRO: utils.print_log("INFO", "\t\tExclude User0 from cluster {} {}'s parent service".format(cluster_id, target_repl.to_str()))
                 parent_service.remove(p_svc)
+        ############################################################################################
         
         all_parent_replica = list()
         for p_svc in parent_service:
@@ -828,23 +844,25 @@ class Service:
     def scale_down(self, how_many_scale_down, cluster_id):
         assert how_many_scale_down > 0
         
-        # prev_tot_num_repl = self.get_cluster_num_replica(cluster_id)
-        prev_tot_num_repl = self.count_cluster_live_replica(cluster_id)
+        # cur_tot_num_repl = self.get_cluster_num_replica(cluster_id)
+        cur_tot_num_repl = self.count_cluster_live_replica(cluster_id)
         
         # desired = self.calc_desired_num_replica(cluster_id)
-        # how_many_scale_down = prev_tot_num_repl - desired
-        new_tot_num_repl = prev_tot_num_repl - how_many_scale_down # == desired
-        if LOG_MACRO: utils.print_log("WARNING", "\nStart scale down(" + SCALEUP_POLICY + ") service" + self.name + "(cluster " + str(cluster_id) + ")")
-        if LOG_MACRO: utils.print_log("WARNING", "\tCurrent total RPS: " + str(self.calc_rps(cluster_id)))
-        if LOG_MACRO: utils.print_log("WARNING", "\tCurrent total live capacity: " + str(self.capacity_per_replica*self.count_cluster_live_replica(cluster_id)))
-        if LOG_MACRO: utils.print_log("WARNING", "\tprev_tot_num_repl: " + str(prev_tot_num_repl))
-        # if LOG_MACRO: utils.print_log("INFO", "\desired: " + str(desired))
-        if LOG_MACRO: utils.print_log("WARNING", "\tSuggested how_many_scale_down: " + str(how_many_scale_down))
-        if LOG_MACRO: utils.print_log("WARNING", "\tnew_tot_num_repl: " + str(new_tot_num_repl))
+        # how_many_scale_down = cur_tot_num_repl - desired
+        new_tot_num_repl = cur_tot_num_repl - how_many_scale_down # == desired
+        if LOG_MACRO:
+            utils.print_log("WARNING", "\nStart scale down(" + CONFIG["SCALEUP_POLICY"] + ") service" + self.name + "(cluster " + str(cluster_id) + ")")
+            utils.print_log("WARNING", "\tCurrent total RPS: " + str(self.calc_rps(cluster_id)))
+            utils.print_log("WARNING", "\tCurrent total live capacity: " + str(self.capacity_per_replica*self.count_cluster_live_replica(cluster_id)))
+            utils.print_log("WARNING", "\cur_tot_num_repl: " + str(cur_tot_num_repl))
+            # utils.print_log("INFO", "\desired: " + str(desired))
+            utils.print_log("WARNING", "\tSuggested how_many_scale_down: " + str(how_many_scale_down))
+            utils.print_log("WARNING", "\tnew_tot_num_repl: " + str(new_tot_num_repl))
         
         sort_replica_list = self.sort_cluster_replica_by_least_request(cluster_id)
-        if LOG_MACRO: utils.print_log("INFO", "Returned sorted_replica_list:")
-        if LOG_MACRO: 
+        
+        if LOG_MACRO:
+            utils.print_log("INFO", "Returned sorted_replica_list:")
             for repl in sort_replica_list:
                 utils.print_log("INFO", "\t{}".format(repl.to_str()))
         
@@ -902,7 +920,7 @@ class Service:
         for i in range(how_many_scale_down):
             final_scale_down_replica.append(filtered_replica_list[i])
         
-        final_new_tot_num_repl = prev_tot_num_repl - how_many_scale_down
+        final_new_tot_num_repl = cur_tot_num_repl - how_many_scale_down
         assert final_new_tot_num_repl > 0
             
         delayed_scale_down_replica = list()
@@ -946,9 +964,9 @@ class Service:
         for target_repl in instant_scale_down_replica:
             self.remove_target_replica(target_repl, cluster_id)
             
-        # if LOG_MACRO: utils.print_log("INFO", "Finish scale down " + self.name + "(cluster " + str(cluster_id) + ") from " + str(prev_tot_num_repl) + " to " + str(self.get_cluster_num_replica(cluster_id)))
+        # if LOG_MACRO: utils.print_log("INFO", "Finish scale down " + self.name + "(cluster " + str(cluster_id) + ") from " + str(cur_tot_num_repl) + " to " + str(self.get_cluster_num_replica(cluster_id)))
         if LOG_MACRO: 
-            utils.print_log("WARNING", "Finish scale down " + self.name + "(cluster " + str(cluster_id) + ") from " + str(prev_tot_num_repl) + " to " + str(self.count_cluster_live_replica(cluster_id)))
+            utils.print_log("WARNING", "Finish scale down " + self.name + "(cluster " + str(cluster_id) + ") from " + str(cur_tot_num_repl) + " to " + str(self.count_cluster_live_replica(cluster_id)))
             utils.print_log("WARNING", "")
         # return self.get_cluster_num_replica(cluster_id)
         return self.count_cluster_live_replica(cluster_id)
@@ -1121,22 +1139,22 @@ class Replica:
             self.origin_req_count_list.append(self.origin_num_req)
             self.non_origin_req_count_list.append(self.non_origin_num_req)
             
-            if len(self.req_count_list) > NUM_BASKET:
+            if len(self.req_count_list) > CONFIG["NUM_BASKET"]:
                 self.req_count_list.pop(0) # Remove the oldest basket.
-            if len(self.local_req_count_list) > NUM_BASKET:
+            if len(self.local_req_count_list) > CONFIG["NUM_BASKET"]:
                 self.local_req_count_list.pop(0) # Remove the oldest basket.
-            if len(self.remote_req_count_list) > NUM_BASKET:
+            if len(self.remote_req_count_list) > CONFIG["NUM_BASKET"]:
                 self.remote_req_count_list.pop(0) # Remove the oldest basket.
-            if len(self.origin_req_count_list) > NUM_BASKET:
+            if len(self.origin_req_count_list) > CONFIG["NUM_BASKET"]:
                 self.origin_req_count_list.pop(0) # Remove the oldest basket.
-            if len(self.non_origin_req_count_list) > NUM_BASKET:
+            if len(self.non_origin_req_count_list) > CONFIG["NUM_BASKET"]:
                 self.non_origin_req_count_list.pop(0) # Remove the oldest basket.    
             
-            assert len(self.req_count_list) <= NUM_BASKET
-            assert len(self.local_req_count_list) <= NUM_BASKET
-            assert len(self.remote_req_count_list) <= NUM_BASKET
-            assert len(self.origin_req_count_list) <= NUM_BASKET
-            assert len(self.non_origin_req_count_list) <= NUM_BASKET
+            assert len(self.req_count_list) <= CONFIG["NUM_BASKET"]
+            assert len(self.local_req_count_list) <= CONFIG["NUM_BASKET"]
+            assert len(self.remote_req_count_list) <= CONFIG["NUM_BASKET"]
+            assert len(self.origin_req_count_list) <= CONFIG["NUM_BASKET"]
+            assert len(self.non_origin_req_count_list) <= CONFIG["NUM_BASKET"]
             
             self.num_req = 0 # reset num request for the next basket (next RPS_UPDATE_INTERVAL)
             self.local_num_req = 0
@@ -1169,9 +1187,9 @@ class Replica:
             # # elif self.cluster_id == 1:
             # #     self.req_count_list.append(self.num_req) ## Main line of this function
                 
-            # #     if len(self.req_count_list) > NUM_BASKET:
+            # #     if len(self.req_count_list) > CONFIG["NUM_BASKET"]:
             # #         self.req_count_list.pop(0) # Remove the oldest basket.
-            # #     assert len(self.req_count_list) <= NUM_BASKET
+            # #     assert len(self.req_count_list) <= CONFIG["NUM_BASKET"]
             # #     if LOG_MACRO: utils.print_log("INFO", "update_request_count_list: " + self.to_str(), end="")
             # #     self.num_req = 0 # reset num request for the next basket (next RPS_UPDATE_INTERVAL)
             # #     for elem in self.req_count_list:
@@ -1184,7 +1202,7 @@ class Replica:
             # if LOG_MACRO: utils.print_log("WARNING", self.to_str() + " avg non_origin rps: " + str(avg(self.non_origin_req_count_list)))
         
     def get_avg_rps(self):
-        # assert len(self.req_count_list) == NUM_BASKET
+        # assert len(self.req_count_list) == CONFIG["NUM_BASKET"]
         if len(self.req_count_list) == 0:
             return 0
         return sum(self.req_count_list)/len(self.req_count_list)
@@ -1216,7 +1234,7 @@ class Replica:
     
     
     def deregister_child_replica(self, child_repl):
-        if LOG_MACRO: utils.print_log("INFO", "\t\tderegister_child_replica, Me:" + self.to_str() + ", target_child_repl: " + child_repl.to_str())
+        if LOG_MACRO: utils.print_log("WARNING", "\t\tderegister_child_replica, Me:" + self.to_str() + ", target_child_repl: " + child_repl.to_str())
         self.child_replica[child_repl.service].remove(child_repl)
         del self.sending_time[child_repl]
         del self.response_time[child_repl]
@@ -1311,9 +1329,8 @@ class Replica:
                     
                     
                     if self.repl_avail_mcore_history[-1][1] != delayed_avail_core:
+                        CONFIG["CNT_DELAYED_ROUTING"] += 1
                         # print("$$ {} is delayed schedulable ({}d vs {} at time {} = {}-{})".format(self.to_str(), str(delayed_avail_core), str(self.repl_avail_mcore_history[-1][1]), str(t_-elem[0]), str(t_), str(elem[0])))
-                        global CNT_DELAYED_ROUTING
-                        CNT_DELAYED_ROUTING += 1
                     return True
                 else:
                     if LOG_MACRO: utils.print_log("DEBUG", self.to_str() + " is NOT delayed schedulable. Not enough resource - avail core(" +  str(delayed_avail_core) + "), " + self.service.name + "(required core: "+ str(self.service.mcore_per_req) +")")
@@ -1498,10 +1515,10 @@ class Replica:
 
 class Simulator:
     def __init__(self, req_arr_0, req_arr_1, cur_time, arg_flags):
-        self.dummy = dict()
-        self.dummy[0] = dict()
-        self.dummy[1] = dict()
-        
+        # self.dummy = dict()
+        # self.dummy[0] = dict()
+        # self.dummy[1] = dict()
+        self.program_start_ts = time.time()
         self.request_arr_0 = req_arr_0
         self.request_arr_1 = req_arr_1
         self.app = arg_flags.app
@@ -1566,7 +1583,6 @@ class Simulator:
         utils.print_percentiles(l_li)
         # p = ", processing time: 10ms"
         if len(self.user0_latency) > 0:
-            cluster0_latency_record_time = [ x[0] for x in self.user0_latency ]
             cluster0_latency = self.get_latency(cluster_id = 0)
             if LOG_MACRO: utils.print_log("DEBUG", "")
             if LOG_MACRO: utils.print_log("DEBUG", "="*30)
@@ -1593,18 +1609,20 @@ class Simulator:
             os.makedirs(output_path)
         return output_path
     
-    def write_simulation_latency_result(self):
-        def write_metadata_file():
+    def write_metadata_file(self):
             output_dir = self.get_output_dir()
             meta_file = open(output_dir+"/metadata.txt", 'w')
             temp_list = list()
             for key, value in vars(self.arg_flags).items():
                 temp_list.append(key + " : " + str(value)+"\n")
+            for key in CONFIG:
+                temp_list.append(key + " : " + str(CONFIG[key])+"\n")
             temp_list.append("start_time : " + str(self.cur_time)+"\n")
             temp_list.append("runtime : " + str(time.time() - self.sim_start_timestamp)+"\n")
             meta_file.writelines(temp_list)
             meta_file.close()
-        
+            
+    def write_simulation_latency_result(self):
         def write_latency_result(li_, cluster_id, path):
             f_ = open(path, 'w')
             temp_list = list()
@@ -1613,7 +1631,6 @@ class Simulator:
             f_.writelines(temp_list)
             f_.close()
             
-        write_metadata_file()
         cluster0_latency = self.get_latency(cluster_id=0)
         cluster1_latency = self.get_latency(cluster_id=1)
         output_dir = self.get_output_dir()
@@ -1677,7 +1694,7 @@ class Simulator:
         # TypeError: '<' not supported between instances of 'TryToProcessRequest' and 'SendBackRequest'\
         # Solution: Add a random number as a second argument to heap. It will be the comparator when two event.scheduled_time items have the same value.
 
-    def start_simulation(self, program_start_ts):
+    def start_simulation(self):
         if LOG_MACRO: utils.print_log("DEBUG", "========== Start simulation ==========")
         if LOG_MACRO: utils.print_log("DEBUG", "- total num request: " + str(len(self.event_queue)))
         while len(self.event_queue) > 0:
@@ -1688,7 +1705,7 @@ class Simulator:
             next_event.execute_event()
         if LOG_MACRO: utils.print_log("DEBUG", "========== Finish simulation ==========")
         print("="*40)
-        print("program run time: {}".format(time.time() - program_start_ts))
+        print("program run time: {}".format(time.time() - self.program_start_ts))
         print("="*40)
         print()
         
@@ -1762,9 +1779,20 @@ class FinishScaleDownStabilization(Event):
     def execute_event(self):
         e_latency = self.event_latency()
         if LOG_MACRO: utils.print_log("INFO", "Execute: FinishScaleDownStabilization cluster " + str(self.cluster_id) + " can scale down again. " + str(int(self.scheduled_time)) + "-" + str(int(self.scheduled_time + e_latency)))
-        assert SCALE_DOWN_STATUS[self.cluster_id] == 0
-        SCALE_DOWN_STATUS[self.cluster_id] = 1
+        assert CONFIG["SCALE_DOWN_STATUS"][self.cluster_id] == 0
+        CONFIG["SCALE_DOWN_STATUS"][self.cluster_id] = 1
             
+            
+class ProgressPrint(Event):
+    def __init__(self, schd_time_, cur_req_arr_idx, max_req_arr_idx, progress_percentage):
+        self.scheduled_time = schd_time_
+        self.name = "ProgressPrint"
+        self.progress_percentage = progress_percentage
+        self.cur_req_arr_idx = cur_req_arr_idx
+        self.max_req_arr_idx = max_req_arr_idx
+        
+    def execute_event(self):
+        print("$$ ProgressPrint: progress,{}%, elapsed_time,{}s, heap size,{}, {}, {}-{}".format(self.progress_percentage, int(time.time()-simulator.program_start_ts), len(simulator.event_queue), simulator.arg_flags.workload, simulator.arg_flags.load_balancer, simulator.arg_flags.routing_algorithm))
 
 
 class AutoscalerCheck(Event):
@@ -1776,8 +1804,8 @@ class AutoscalerCheck(Event):
         return 0
 
     def execute_event(self):
-        # SCALE_UP_OVERHEAD=5000 # 5sec
-        # SCALE_DOWN_OVERHEAD=5000 # 5sec
+        # CONFIG["SCALE_UP_OVERHEAD"]=5000 # 5sec
+        # CONFIG["SCALE_DOWN_OVERHEAD"]=5000 # 5sec
         e_latency = self.event_latency()
         if LOG_MACRO: utils.print_log("INFO", "Execute: AutoscalerCheck during " + str(int(self.scheduled_time)) + "-" + str(int(self.scheduled_time + e_latency)))
         for service in dag.all_service:
@@ -1791,50 +1819,48 @@ class AutoscalerCheck(Event):
                 cluster_0_desired = service.calc_desired_num_replica(0)
                 cluster_0_cur_tot_num_repl = service.count_cluster_live_replica(0)
                 overloaded_cluster_0 = cluster_0_desired > cluster_0_cur_tot_num_repl
-                if LOG_MACRO: utils.print_log("WARNING", "Is cluster {} overloaded?, desired: {}, current: {}".format(0, cluster_0_desired, cluster_0_cur_tot_num_repl))
                 if overloaded_cluster_0: # overloaded
-                    if LOG_MACRO: utils.print_log("WARNING", "Overloaded! service {} in cluster {}, desired: {}, current: {}".format(self.name, 0, cluster_0_desired, cluster_0_cur_tot_num_repl))
+                    if LOG_MACRO: utils.print_log("WARNING", "Overloaded! service {} in cluster {}, desired: {}, current: {}".format(service.name, 0, cluster_0_desired, cluster_0_cur_tot_num_repl))
                     how_many_scale_up = cluster_0_desired - cluster_0_cur_tot_num_repl
                     assert how_many_scale_up > 0
-                    scale_up_event = ScaleUp(self.scheduled_time + SCALE_UP_OVERHEAD + e_latency, service, how_many_scale_up, cluster_id=0)
+                    if LOG_MACRO: utils.print_log("WARNING", "Schedule ScaleUp, cluster{}-service {} from {} to {}".format(0, service.name, cluster_0_cur_tot_num_repl, cluster_0_desired))
+                    scale_up_event = ScaleUp(self.scheduled_time + CONFIG["SCALE_UP_OVERHEAD"] + e_latency, service, how_many_scale_up, cluster_id=0)
                     simulator.schedule_event(scale_up_event)
-                elif SCALE_DOWN_STATUS[0]==1 and service.should_we_scale_down(cluster_id=0): # If not overloaded, then check if scale down is needed.
-                    scale_down_schd_time = self.scheduled_time + SCALE_DOWN_OVERHEAD + e_latency
+                elif CONFIG["SCALE_DOWN_STATUS"][0]==1 and service.should_we_scale_down(cluster_id=0): # If not overloaded, then check if scale down is needed.
+                    scale_down_schd_time = self.scheduled_time + CONFIG["SCALE_DOWN_OVERHEAD"] + e_latency
                     desired = service.calc_desired_num_replica(0)
                     # cur_num_repl = service.get_cluster_num_replica(0)
                     cur_num_repl = service.count_cluster_live_replica(0)
                     how_many_scale_down = cur_num_repl - desired
-                    if LOG_MACRO: utils.print_log("INFO", "Schedule ScaleDown! service {} (cluster_{}) by {} at {}".format(service.name, 0, how_many_scale_down, scale_down_schd_time))
+                    if LOG_MACRO: utils.print_log("WARNING", "Schedule ScaleDown service {} (cluster_{}) by {} at {}".format(service.name, 0, how_many_scale_down, scale_down_schd_time))
                     scale_down_event = ScaleDown(scale_down_schd_time, service, how_many_scale_down, cluster_id=0)
                     simulator.schedule_event(scale_down_event)
                     
-                    SCALE_DOWN_STATUS[0]=0
-                    finish_stabilization_event = FinishScaleDownStabilization(self.scheduled_time + e_latency + SCALE_DOWN_STABILIZE_WINDOW, 0)
+                    CONFIG["SCALE_DOWN_STATUS"][0]=0
+                    finish_stabilization_event = FinishScaleDownStabilization(self.scheduled_time + e_latency + CONFIG["SCALE_DOWN_STABILIZE_WINDOW"], 0)
                     simulator.schedule_event(finish_stabilization_event)
                     
                 cluster_1_desired = service.calc_desired_num_replica(1)
                 cluster_1_cur_tot_num_repl = service.count_cluster_live_replica(1)
                 overloaded_cluster_1 = cluster_1_desired > cluster_1_cur_tot_num_repl
-                if LOG_MACRO: utils.print_log("WARNING", "Is cluster {} overloaded?, desired: {}, current: {}".format(1, cluster_1_desired, cluster_1_cur_tot_num_repl))
-                # if service.is_overloaded(cluster_id=1):
                 if overloaded_cluster_1: # overloaded
-                    if LOG_MACRO: utils.print_log("WARNING", "Overloaded! service {} in cluster {}, desired: {}, current: {}".format(self.name, 1, cluster_1_desired, cluster_1_cur_tot_num_repl))
+                    if LOG_MACRO: utils.print_log("WARNING", "Overloaded! service {} in cluster {}, desired: {}, current: {}".format(service.name, 1, cluster_1_desired, cluster_1_cur_tot_num_repl))
                     how_many_scale_up = cluster_1_desired - cluster_1_cur_tot_num_repl
                     assert how_many_scale_up > 0
-                    scale_up_event = ScaleUp(self.scheduled_time + SCALE_UP_OVERHEAD + e_latency, service, how_many_scale_up, cluster_id=1)
+                    scale_up_event = ScaleUp(self.scheduled_time + CONFIG["SCALE_UP_OVERHEAD"] + e_latency, service, how_many_scale_up, cluster_id=1)
                     simulator.schedule_event(scale_up_event)
-                elif SCALE_DOWN_STATUS[1]==1 and service.should_we_scale_down(cluster_id=1):
-                    scale_down_schd_time = self.scheduled_time + SCALE_DOWN_OVERHEAD + e_latency
+                elif CONFIG["SCALE_DOWN_STATUS"][1]==1 and service.should_we_scale_down(cluster_id=1):
+                    scale_down_schd_time = self.scheduled_time + CONFIG["SCALE_DOWN_OVERHEAD"] + e_latency
                     desired = service.calc_desired_num_replica(1)
                     # cur_num_repl = service.get_cluster_num_replica(1)
                     cur_num_repl = service.count_cluster_live_replica(1)
                     how_many_scale_down = cur_num_repl - desired
-                    if LOG_MACRO: utils.print_log("INFO", "Schedule ScaleDown! service {} (cluster_{}) by {} at {}".format(service.name, 1, how_many_scale_down, scale_down_schd_time))
-                    scale_down_event = ScaleDown(self.scheduled_time + SCALE_DOWN_OVERHEAD + e_latency, service, how_many_scale_down, cluster_id=1)
+                    if LOG_MACRO: utils.print_log("WARNING", "Schedule ScaleDown service {} (cluster_{}) by {} at {}".format(service.name, 1, how_many_scale_down, scale_down_schd_time))
+                    scale_down_event = ScaleDown(self.scheduled_time + CONFIG["SCALE_DOWN_OVERHEAD"] + e_latency, service, how_many_scale_down, cluster_id=1)
                     simulator.schedule_event(scale_down_event)
                     
-                    SCALE_DOWN_STATUS[1]=0
-                    finish_stabilization_event = FinishScaleDownStabilization(self.scheduled_time + e_latency + SCALE_DOWN_STABILIZE_WINDOW, 1)
+                    CONFIG["SCALE_DOWN_STATUS"][1]=0
+                    finish_stabilization_event = FinishScaleDownStabilization(self.scheduled_time + e_latency + CONFIG["SCALE_DOWN_STABILIZE_WINDOW"], 1)
                     simulator.schedule_event(finish_stabilization_event)
             
 class ScaleUp(Event):
@@ -1916,17 +1942,18 @@ class LoadBalancing(Event):
         
         # Step 1 
         # If the static_lb rule is defined for User. static_lb is only for User.
-        if ROUTING_ALGORITHM == "LCLB": # No multi-cluster
+        if CONFIG["ROUTING_ALGORITHM"] == "LCLB": # No multi-cluster
             superset_candidates = placement.svc_to_repl[self.src_replica.cluster_id][self.dst_service]
             dst_replica_candidates = list()
             
-            if self.dst_service.name not in simulator.dummy[0]:
-                simulator.dummy[0][self.dst_service.name] = list()
-            if self.dst_service.name not in simulator.dummy[1]:
-                simulator.dummy[1][self.dst_service.name] = list()
+            # if self.dst_service.name not in simulator.dummy[0]:
+            #     simulator.dummy[0][self.dst_service.name] = list()
+            # if self.dst_service.name not in simulator.dummy[1]:
+            #     simulator.dummy[1][self.dst_service.name] = list()
+            
             # Cluster 0
             if self.src_replica.cluster_id == 0:
-                simulator.dummy[0][self.dst_service.name].append([self.scheduled_time , len(superset_candidates)])
+                # simulator.dummy[0][self.dst_service.name].append([self.scheduled_time , len(superset_candidates)])
                 #########################################################
                 # TODO: overhead
                 #########################################################
@@ -1939,7 +1966,7 @@ class LoadBalancing(Event):
                 #########################################################
             # Cluster 1
             elif self.src_replica.cluster_id == 1:
-                simulator.dummy[1][self.dst_service.name].append([self.scheduled_time , len(superset_candidates)])
+                # simulator.dummy[1][self.dst_service.name].append([self.scheduled_time, len(superset_candidates)])
                 for repl in superset_candidates:
                      if repl.cluster_id == 1:
                         if repl.is_dead == False:
@@ -1947,10 +1974,10 @@ class LoadBalancing(Event):
                         else:
                             if LOG_MACRO: utils.print_log("INFO", "Replica "+repl.to_str()+" was dead. It will be excluded from lb dst candidate.")
         
-        elif ROUTING_ALGORITHM == "heuristic_TE":
+        elif CONFIG["ROUTING_ALGORITHM"] == "heuristic_TE":
             ## This is naive implementation of request routing.
             ## Assumption: it assumes that you know the available resource of the remote cluster magically.
-            ## Heuristic: the requests will be routed when the load becomes soaring up and the local cluster cannot accomodate it with the current capacity AND when the remote cluster has some rooms to process more request other than its local load.
+            ## Heuristic: the requests will be routed when the load becomes soaring up and the local cluster cannot accomodate it with the current capacity AND when the remote cluster has some rooms to process more request.
             if self.src_replica.cluster_id == 0:
                 other_cluster = 1
             else:
@@ -1963,29 +1990,29 @@ class LoadBalancing(Event):
             if self.src_replica.cluster_id == 0: 
                 ''' Fixed portion routing '''
                 ###################################################################
-                local_cluster_remainig_capacity = self.dst_service.has_schedulable_replica(self.src_replica.cluster_id)
+                local_schd_replicas, local_zq_replicas, num_schd_cluster_repl, num_zero_queue_cluster_repl = self.dst_service.num_schedulable_and_zero_queue_replica(self.src_replica.cluster_id)
                 ###################################################################
-                
-                if local_cluster_remainig_capacity == False:
-                    does_local_has_zero_queue_replica = self.dst_service.has_zero_queue_replica(self.src_replica.cluster_id)
-                    if does_local_has_zero_queue_replica:
-                        local_cluster_remainig_capacity = True
-                
-                # if LOG_MACRO: utils.print_log("WARNING", "local_cluster_remaining_capacity: {}, remote_cluster_remaining_capacity: {}".format(local_cluster_remainig_capacity, remote_cluster_remaining_capacity))
-                if local_cluster_remainig_capacity > 0:
-                    superset_candidates = local_candidate
-                    if LOG_MACRO: utils.print_log("WARNING", "(LB) local free, cluster {}({}) local routing {}".format(self.src_replica.cluster_id, self.src_replica.to_str(), self.src_replica.cluster_id))
-                else:
+                if num_schd_cluster_repl > 0: # local routing. local cluster has enough resource.
+                    superset_candidates = local_schd_replicas
+                if num_zero_queue_cluster_repl > 0: # local routing. local cluster has enough resource.
+                    superset_candidates = local_zq_replicas
+                else: # check if the remote cluster has available resource
                     if simulator.arg_flags.delayed_information:
-                        remote_cluster_remaining_capacity = self.dst_service.has_delayed_schedulable_replica(other_cluster, self.scheduled_time + e_latency)
+                        remote_delayed_schd_repl, remote_num_delayed_schd_repl = self.dst_service.num_delayed_schedulable_replica(other_cluster, self.scheduled_time + e_latency)
+                        if remote_num_delayed_schd_repl > 0: # remote routing. local cluster does not have enough resource and remote has available resource.
+                            superset_candidates = remote_delayed_schd_repl
+                            if LOG_MACRO: utils.print_log("WARNING", "(LB) local overloaded and remote free, remote routing from cluster {}({}) to cluster{}".format(self.src_replica.cluster_id, self.src_replica.to_str(), other_cluster))
+                        else: # again local routing. local and remote cluster both do not have enough resource.
+                            superset_candidates = local_candidate
+                            if LOG_MACRO: utils.print_log("WARNING", "(LB) both overloaded, local routing from cluster {}({}) to cluster{}".format(self.src_replica.cluster_id, self.src_replica.to_str(), other_cluster))
                     else:
-                        remote_cluster_remaining_capacity = self.dst_service.has_schedulable_replica(other_cluster)
-                    if remote_cluster_remaining_capacity > 0: # Route the request to the remote cluster ONLY when there 
-                        if LOG_MACRO: utils.print_log("WARNING", "(LB) local overloaded and remote free, remote routing from cluster {}({}) to cluster{}".format(self.src_replica.cluster_id, self.src_replica.to_str(), other_cluster))
-                        superset_candidates = remote_candidate
-                    else:
-                        if LOG_MACRO: utils.print_log("WARNING", "(LB) both overloaded, local routing from cluster {}({}) to cluster{}".format(self.src_replica.cluster_id, self.src_replica.to_str(), other_cluster))
-                        superset_candidates = local_candidate
+                        remote_schd_replicas, remote_zq_replicas, remote_num_schd_cluster_repl, remote_num_zero_queue_cluster_repl = self.dst_service.num_schedulable_and_zero_queue_replica(other_cluster)
+                        if remote_num_schd_cluster_repl > 0: # remote routing. local cluster does not have enough resource and remote has available resource.
+                            superset_candidates = remote_schd_replicas
+                            if LOG_MACRO: utils.print_log("WARNING", "(LB) local overloaded and remote free, remote routing from cluster {}({}) to cluster{}".format(self.src_replica.cluster_id, self.src_replica.to_str(), other_cluster))
+                        else: # again local routing. local and remote cluster both do not have enough resource.
+                            superset_candidates = local_candidate
+                            if LOG_MACRO: utils.print_log("WARNING", "(LB) both overloaded, local routing from cluster {}({}) to cluster{}".format(self.src_replica.cluster_id, self.src_replica.to_str(), other_cluster))
                 
                 ## ERROR Handling    
                 verifying_superset_candidates = placement.svc_to_repl[self.src_replica.cluster_id][self.dst_service]
@@ -2004,7 +2031,7 @@ class LoadBalancing(Event):
                     dst_replica_candidates.append(repl)
                 else:
                     if LOG_MACRO: utils.print_log("INFO", "(LB), Replica "+repl.to_str()+" was dead. It will be excluded from lb dst candidate.")
-        elif ROUTING_ALGORITHM == "moment_response_time":
+        elif CONFIG["ROUTING_ALGORITHM"] == "moment_response_time":
             # It routes requests to a replica who has the shortest expected response time at the time(moment) a request is decided to be rounted to a child service.
             # MOMENT LATENCY = (Network latency RTT) + (Queue size*processing time) + (Processing time)
             # E.g., 
@@ -2012,7 +2039,7 @@ class LoadBalancing(Event):
             #   - remote replica, queue size 3: (40*2) + (3*100) + 100 = 480
             #   In this case, the request will be routed to the remote replica.
             
-            superset_candidates = placement.get_all_svc_to_repl()
+            superset_candidates = placement.all_svc_to_repl[self.dst_service]
             moment_latency_list = list()
             for i in range(len(superset_candidates)):
                 mmt_latency = self.src_replica.calc_moment_latency(superset_candidates[i])
@@ -2033,7 +2060,7 @@ class LoadBalancing(Event):
                 else:
                     if LOG_MACRO: utils.print_log("INFO", "(LB), Replica "+repl.to_str()+" was dead. It will be excluded from lb dst candidate.")
                     
-        elif ROUTING_ALGORITHM == "MCLB": # multi-cluster load balancing
+        elif CONFIG["ROUTING_ALGORITHM"] == "MCLB": # multi-cluster load balancing
             # ################################################################
             # ######################### BUG BUG BUG ##########################
             # ################################################################
@@ -2050,7 +2077,7 @@ class LoadBalancing(Event):
             # It treats all replicas in the local and remote clusters equally.
             # It use configured base load balancer for every replicas in all clusters.
             # In other words, no smart routing.
-            superset_candidates = placement.get_all_svc_to_repl()
+            superset_candidates = placement.all_svc_to_repl[self.dst_service]
             
             ## DEBUG PRINT
             if LOG_MACRO: utils.print_log("INFO", "(LB) Dst superset:")
@@ -2064,7 +2091,7 @@ class LoadBalancing(Event):
                 else:
                     if LOG_MACRO: utils.print_log("INFO", "(LB), Replica "+repl.to_str()+" was dead. It will be excluded from lb dst candidate.")
         else:
-            utils.error_handling("Invalid ROUTING_ALGORITHM({}).".format(ROUTING_ALGORITHM))
+            utils.error_handling("Invalid ROUTING_ALGORITHM({}).".format(CONFIG["ROUTING_ALGORITHM"]))
                         
                          
             # DEBUG PRINT
@@ -2107,7 +2134,6 @@ class LoadBalancing(Event):
         dst_replica.num_pending_request += 1
         dst_replica.processing_queue_size += 1
 
-        if LOG_MACRO: utils.print_log("DEBUG", "")
         if LOG_MACRO: utils.print_log("INFO", "Execute: LoadBalancing " + self.policy + " (request[" + str(self.request.id) + "]), " + self.src_replica.to_str() + "=>" + dst_replica.to_str() + " during " + str(int(self.scheduled_time)) + "-" + str(int(self.scheduled_time + e_latency)))
         
         assert self.src_replica.get_status() == "Active"
@@ -2338,7 +2364,7 @@ class RecvRequest(Event):
         
         self.dst_replica.num_recv_request += 1
         if self.dst_replica.is_warm == False:
-            if self.dst_replica.num_recv_request >= WARMUP_SIZE:
+            if self.dst_replica.num_recv_request >= CONFIG["WARMUP_SIZE"]:
                 self.dst_replica.is_warm = True
                 if LOG_MACRO: utils.print_log("DEBUG", "WARMED UP! " + self.dst_replica.to_str())
         #######################################################################
@@ -2459,7 +2485,7 @@ class ProcessRequest(Event):
         
     def event_latency(self):
         mu = self.dst_replica.service.processing_time
-        sigma = PROCESSING_TIME_SIGMA
+        sigma = CONFIG["PROCESSING_TIME_SIGMA"]
         sample = np.random.normal(mu, sigma, 1)
         return sample[0]
         # return self.dst_replica.service.processing_time
@@ -2633,7 +2659,7 @@ class RecvSendBack(Event):
         sending_st = self.dst_replica.sending_time[self.src_replica][self.request.id]
         del self.dst_replica.sending_time[self.src_replica][self.request.id]
         self.dst_replica.response_time[self.src_replica].append(self.scheduled_time + e_latency - sending_st)
-        if len(self.dst_replica.response_time[self.src_replica]) > MA_WINDOW_SIZE:
+        if len(self.dst_replica.response_time[self.src_replica]) > CONFIG["MA_WINDOW_SIZE"]:
             self.dst_replica.response_time[self.src_replica].pop(0)
         assert self.src_replica in self.dst_replica.num_outstanding_response_from_child
         self.dst_replica.num_outstanding_response_from_child[self.src_replica] -= 1
@@ -2722,86 +2748,6 @@ class CompleteRequest(Event):
 #######################################################################################
 
 
-def one_service_application(load_balancer, init_num_repl_c0, init_num_repl_c1):
-    user_0 = Service(name_="User0", mcore_per_req_=0, processing_t_=0, lb_=load_balancer)
-    user_1 = Service(name_="User1", mcore_per_req_=0, processing_t_=0, lb_=load_balancer)
-    svc_a = Service(name_="A", mcore_per_req_=1000, processing_t_=100, lb_=load_balancer)
-    dag.add_service(user_0)
-    dag.add_service(user_1)
-    dag.add_service(svc_a)
-    
-    service_map = {"A":svc_a}
-    
-    # DAG
-    dag.add_dependency(parent_service=user_0, child_service=svc_a, weight=10)
-    dag.add_dependency(parent_service=user_1, child_service=svc_a, weight=10)
-    
-    
-    # Replica
-    temp_all_replica = list()
-    # Two users represent two clusters(multi-cluster).
-    u_0 = Replica(service=user_0, id=0)
-    u_1 = Replica(service=user_1, id=1)
-    user_0.add_replica(u_0)
-    user_1.add_replica(u_1)
-        
-    temp_all_replica.append(u_0)
-    temp_all_replica.append(u_1)
-    
-    # Four replicas of the service A.
-    # num_replica_for_cluster_0 = {"A":8}
-    # num_replica_for_cluster_1 = {"A":8}
-    print("init_num_repl_c0: ", init_num_repl_c0)
-    print("init_num_repl_c1: ", init_num_repl_c1)
-    num_replica_for_cluster_0 = {"A":init_num_repl_c0}
-    num_replica_for_cluster_1 = {"A":init_num_repl_c1}
-    
-    # replica_for_cluster_0 = {"A":list(), "B":list(), "C":list(), "D":list(), "E":list(), "F":list()}
-    replica_for_cluster_0 = dict()
-    for service in service_map:
-        replica_for_cluster_0[service] = list()
-    # replica_for_cluster_1 = {"A":list(), "B":list(), "C":list(), "D":list(), "E":list(), "F":list()}
-    replica_for_cluster_1 = dict()
-    for service in service_map:
-        replica_for_cluster_1[service] = list()
-        
-    # Replica for cluster 0
-    for service in service_map:
-        for i in range(num_replica_for_cluster_0[service]):
-            repl = Replica(service=service_map[service], id=i*2)
-            service_map[service].add_replica(repl)
-            temp_all_replica.append(repl)
-            replica_for_cluster_0[service].append(repl) # replica id: 0,2,4,6
-    # Replica for cluster 1
-    for service in service_map:
-        for i in range(num_replica_for_cluster_1[service]):
-            repl = Replica(service=service_map[service], id=i*2+1)
-            service_map[service].add_replica(repl)
-            temp_all_replica.append(repl)
-            replica_for_cluster_1[service].append(repl) # replica id: 1,3,5,7
-    
-    # Placement
-    # Cluster 0
-    placement.place_replica_to_node_and_allocate_core(u_0, node_0, 0)
-    for service in replica_for_cluster_0:
-        for repl in replica_for_cluster_0[service]:
-            placement.place_replica_to_node_and_allocate_core(repl, node_0, 1000)
-    # Cluster 1
-    placement.place_replica_to_node_and_allocate_core(u_1, node_1, 0)
-    for service in replica_for_cluster_1:
-        for repl in replica_for_cluster_1[service]:
-            placement.place_replica_to_node_and_allocate_core(repl, node_1, 1000)
-    
-    # static_lb["User0"] = [0, 2, 4, 6] # dst replica id of cluster 0 frontend service
-    # static_lb["User1"] = [1, 3, 5, 7]
-    
-    dag.print_service_and_replica()
-    
-    for repl in temp_all_replica:
-        dag.register_replica(repl) # Multi-cluster aware registration!
-    
-    return u_0, u_1, svc_a
-
 def three_depth_application(load_balancer, c0_req_arr, c1_req_arr):
     user = Service(name_="User", mcore_per_req_=0, processing_t_=0, lb_=load_balancer)
     # user_1 = Service(name_="User1", mcore_per_req_=0, processing_t_=0, lb_=load_balancer)
@@ -2812,7 +2758,7 @@ def three_depth_application(load_balancer, c0_req_arr, c1_req_arr):
     svc_e = Service(name_="E", mcore_per_req_=1000, processing_t_=30, lb_=load_balancer) # H
     svc_f = Service(name_="F", mcore_per_req_=1000, processing_t_=10, lb_=load_balancer) # L
     # Currently it is assumed that cluster 0 and cluster 1 have the same application topology
-    service_map = {"A":svc_a, "B":svc_b, "C":svc_c, "D":svc_d, "E":svc_e, "F":svc_f}
+    service_map = {"User":user, "A":svc_a, "B":svc_b, "C":svc_c, "D":svc_d, "E":svc_e, "F":svc_f}
     
     dag.add_service(user)
     # dag.add_service(user_1)
@@ -2832,68 +2778,68 @@ def three_depth_application(load_balancer, c0_req_arr, c1_req_arr):
     dag.add_dependency(parent_service=svc_d, child_service=svc_e, weight=10)
     dag.add_dependency(parent_service=svc_d, child_service=svc_f, weight=10)
     
-    # Replica
-    temp_all_replica = list()
-    # Two users represent two clusters(multi-cluster).
-    u_0 = Replica(service=user, id=0)
-    u_1 = Replica(service=user, id=1)
-    temp_all_replica.append(u_0)
-    temp_all_replica.append(u_1)
     
     # num_replica_for_cluster_0 = {"A":3, "B":1, "C":2, "D":4, "E":3, "F":1}
     # num_replica_for_cluster_1 = {"A":3, "B":1, "C":2, "D":4, "E":3, "F":1} # HotOS version
     num_replica_for_cluster_0 = dict()
     num_replica_for_cluster_1 = dict()
     for svc in service_map:
-        num_replica_for_cluster_0[svc] = calc_initial_num_replica(c0_req_arr, service_map[svc].capacity_per_replica, 2)
+        num_replica_for_cluster_0[svc] = calc_initial_num_replica(c0_req_arr, service_map[svc])
     for svc in service_map:
-        num_replica_for_cluster_1[svc] = calc_initial_num_replica(c1_req_arr, service_map[svc].capacity_per_replica, 2)
-        
+        num_replica_for_cluster_1[svc] = calc_initial_num_replica(c1_req_arr, service_map[svc])
     print("- num_replica_for_cluster_0")
     for svc in num_replica_for_cluster_0:
         print("\t- {}: {}".format(svc, num_replica_for_cluster_0[svc]))
     print("- num_replica_for_cluster_1")
     for svc in num_replica_for_cluster_1:
         print("\t- {}: {}".format(svc, num_replica_for_cluster_1[svc]))
-    replica_for_cluster_0 = dict()
-    for service in service_map:
-        replica_for_cluster_0[service] = list()
-    replica_for_cluster_1 = dict()
-    for service in service_map:
-        replica_for_cluster_1[service] = list()
         
+    replica_for_cluster_0 = dict()
+    for svc in service_map:
+        replica_for_cluster_0[svc] = list()
+    replica_for_cluster_1 = dict()
+    for svc in service_map:
+        replica_for_cluster_1[svc] = list()
+        
+    # Replica
+    temp_all_replica = list()
     # Replica for cluster 0
-    for service in service_map:
-        for i in range(num_replica_for_cluster_0[service]):
-            repl = Replica(service=service_map[service], id=i*2)
-            service_map[service].add_replica(repl)
+    for svc in service_map:
+        for i in range(num_replica_for_cluster_0[svc]):
+            repl = Replica(service=service_map[svc], id=i*2)
+            service_map[svc].add_replica(repl)
             temp_all_replica.append(repl)
-            replica_for_cluster_0[service].append(repl) # replica id: 0,2,4,6
+            replica_for_cluster_0[svc].append(repl) # replica id: 0,2,4,6
     # Replica for cluster 1
-    for service in service_map:
-        for i in range(num_replica_for_cluster_1[service]):
-            repl = Replica(service=service_map[service], id=i*2+1)
-            service_map[service].add_replica(repl)
+    for svc in service_map:
+        for i in range(num_replica_for_cluster_1[svc]):
+            repl = Replica(service=service_map[svc], id=i*2+1)
+            service_map[svc].add_replica(repl)
             temp_all_replica.append(repl)
-            replica_for_cluster_1[service].append(repl) # replica id: 1,3,5,7
+            replica_for_cluster_1[svc].append(repl) # replica id: 1,3,5,7
     
     # Placement
-    # Cluster 0
-    placement.place_replica_to_node_and_allocate_core(u_0, node_0, 0)
-    for service in replica_for_cluster_0:
-        for repl in replica_for_cluster_0[service]:
-            placement.place_replica_to_node_and_allocate_core(repl, node_0, 1000)
-    # Cluster 1
-    placement.place_replica_to_node_and_allocate_core(u_1, node_1, 0)
-    for service in replica_for_cluster_1:
-        for repl in replica_for_cluster_1[service]:
-            placement.place_replica_to_node_and_allocate_core(repl, node_1, 1000)
+    for svc in replica_for_cluster_0:
+        for repl in replica_for_cluster_0[svc]:
+            if svc == "User":
+                placement.place_replica_to_node_and_allocate_core(repl, node_0, 0)
+            else:
+                placement.place_replica_to_node_and_allocate_core(repl, node_0, 1000)
+    for svc in replica_for_cluster_1:
+        for repl in replica_for_cluster_1[svc]:
+            if svc == "User":
+                placement.place_replica_to_node_and_allocate_core(repl, node_1, 1)
+            else:
+                placement.place_replica_to_node_and_allocate_core(repl, node_1, 1000)
     # static_lb["User0"] = [0, 2, 4, 6] # dst replica id of cluster 0 frontend service
     # static_lb["User1"] = [1, 3, 5, 7]
     dag.print_service_and_replica()
     for repl in temp_all_replica:
         dag.register_replica(repl)
-    return u_0, u_1, svc_a
+    print("replica_for_cluster_0[User],", replica_for_cluster_0["User"][0].to_str())
+    print("replica_for_cluster_1[User],", replica_for_cluster_1["User"][0].to_str())
+    # replica_for_cluster_0["User"][0] since there is only one user replica for each cluster. 
+    return replica_for_cluster_0["User"][0], replica_for_cluster_1["User"][0], svc_a
 
 
 # def calc_non_burst_rps(durations_ratio, moment_rps_, target_rps_):
@@ -2957,7 +2903,9 @@ def print_argument(flags):
         if LOG_MACRO: utils.print_log("INFO", "{}: {}".format(key, str(value)))
     if LOG_MACRO: utils.print_log("INFO", "=============================================================")
 
-def calc_initial_num_replica(req_arr, per_replica_capacity, factor):
+def calc_initial_num_replica(req_arr, svc):
+    if svc.name == "User":
+        return 1
     def request_arrival_to_rps(req_arr):
         rps_list = list()
         rps = 0
@@ -2972,14 +2920,17 @@ def calc_initial_num_replica(req_arr, per_replica_capacity, factor):
     rps_list = request_arrival_to_rps(req_arr)
     initial_rps = rps_list[:60]
     avg_init_rps = sum(initial_rps)/len(initial_rps)
-    initial_num_replica = int((avg_init_rps/per_replica_capacity) * factor)
+    temp = 0.5
+    initial_num_replica = int((avg_init_rps/svc.capacity_per_replica) * (1/temp))
     # print("rps_list: ", rps_list)
     # print("per_replica_capacity: ", per_replica_capacity)
     # print("avg_init_rps: ", avg_init_rps)
     # print("initial_rps: ", initial_rps)
     # print("initial_num_replica: ", initial_num_replica)
-    if initial_num_replica == 0 or initial_num_replica == 1:
-        initial_num_replica = 2
+    
+    # if initial_num_replica <= 1:
+    if initial_num_replica < int(1/temp):
+        initial_num_replica = int(1/temp)
     return initial_num_replica
   
 if __name__ == "__main__":
@@ -2992,11 +2943,11 @@ if __name__ == "__main__":
     flags, unparsed = parser.parse_known_args()
                 
     ''' multi-cluster on/off '''
-    MA_WINDOW_SIZE = flags.response_time_window_size
+    CONFIG["MA_WINDOW_SIZE"] = flags.response_time_window_size
     
     ''' multi-cluster routing algorithm '''
     FIXED_AUTOSCALER = flags.fixed_autoscaler
-    ROUTING_ALGORITHM = flags.routing_algorithm
+    CONFIG["ROUTING_ALGORITHM"] = flags.routing_algorithm
     
     ''' Configure network latency '''
     same_rack = flags.same_rack_network_latency
@@ -3031,25 +2982,25 @@ if __name__ == "__main__":
     ## Deprecated: Configure initial num replica
 
     ''' Application '''
-    if flags.app == "one_service":
-        init_num_repl_c0 = calc_initial_num_replica(c0_request_arrival, 2)
-        init_num_repl_c1 = calc_initial_num_replica(c1_request_arrival, 2)
-        print("init_num_repl_cluster_0: ", init_num_repl_c0)
-        print("init_num_repl_cluster_1: ", init_num_repl_c1)
-        user_group_0, user_group_1, svc_a = one_service_application(flags.load_balancer, init_num_repl_c0, init_num_repl_c1)
-    elif flags.app == "three_depth":
-        user_group_0, user_group_1, svc_a = three_depth_application(flags.load_balancer, c0_request_arrival, c1_request_arrival)
+    # if flags.app == "one_service":
+    #     init_num_repl_c0 = calc_initial_num_replica(c0_request_arrival, 2)
+    #     init_num_repl_c1 = calc_initial_num_replica(c1_request_arrival, 2)
+    #     print("init_num_repl_cluster_0: ", init_num_repl_c0)
+    #     print("init_num_repl_cluster_1: ", init_num_repl_c1)
+    #     user_group_0, user_group_1, svc_a = one_service_application(flags.load_balancer, init_num_repl_c0, init_num_repl_c1)
+    if flags.app == "three_depth":
+        repl_user_0, repl_user_1, svc_a = three_depth_application(flags.load_balancer, c0_request_arrival, c1_request_arrival)
     else:
         utils.error_handling("Application scenario " + flags.app + " is not supported.")
     ''' Replica level DAG '''
     def create_replica_dependency():
         for repl in dag.all_replica:
-            if dag.is_leaf(repl.service) is False: ###
+            if dag.is_leaf(repl.service) is False:
                 for child_svc in repl.child_services:
                     child_repl = dag.get_child_replica(repl, child_svc)
                     for c_repl in child_repl:
-                        # repl.register_child_replica(c_repl, child_svc)
                         repl.register_child_replica_2(c_repl)
+                        if LOG_MACRO: utils.print_log("WARNING", "{} -> {}".format(repl.to_str(), c_repl.to_str()))
     create_replica_dependency()
     
     ## DEBUG PRINT 
@@ -3066,7 +3017,7 @@ if __name__ == "__main__":
             
         
     dag.print_dependency()
-    dag.plot_graphviz()
+    # dag.plot_graphviz()
     placement.print()
     # ym1 = plot_workload_histogram_2(request_arrivals_0, "Cluster 0 - Workload distribution", 0)
     # ym2 = plot_workload_histogram_2(request_arrivals_1, "Cluster 1 - Workload distribution", ym1)
@@ -3077,13 +3028,13 @@ if __name__ == "__main__":
         request = Request(req_id, origin_cluster_0)
         simulator.request_start_time[request] = req_arr
         # service A is frontend service
-        simulator.schedule_event(LoadBalancing(req_arr, request, user_group_0, svc_a)) 
+        simulator.schedule_event(LoadBalancing(req_arr, request, repl_user_0, svc_a)) 
         req_id += 1
     origin_cluster_1 = 1
     for req_arr in c1_request_arrival:
             request = Request(req_id, origin_cluster_1)
             simulator.request_start_time[request] = req_arr
-            simulator.schedule_event(LoadBalancing(req_arr, request, user_group_1, svc_a))
+            simulator.schedule_event(LoadBalancing(req_arr, request, repl_user_1, svc_a))
             req_id += 1
             
     # Schedule autoscaling check event every 30 sec
@@ -3092,41 +3043,54 @@ if __name__ == "__main__":
     for i in range(num_autoscale_check):
         if i > 5:
             simulator.schedule_event(AutoscalerCheck(simulator.arg_flags.autoscaler_period*i))
+    
+    if len(c0_request_arrival) > len(c1_request_arrival):
+        longer_request_arr = c0_request_arrival
+    else:
+        longer_request_arr = c1_request_arrival
+    num_progress_check = 10
+    for i in range(1, num_progress_check+1):
+        idx = int(len(longer_request_arr)/num_progress_check)*i - 1
+        e_time = longer_request_arr[idx]
+        # print("progress check: {} of out {}, {}\%, req_arr_time {}".format(idx, len(longer_request_arr), i*10, e_time))
+        simulator.schedule_event(ProgressPrint(e_time, idx, len(longer_request_arr), i*10))
             
     # Schedule UpdateRPS every RPS_UPDATE_INTERVAL sec
-    num_rps_update = int(max_arrival_time/RPS_UPDATE_INTERVAL)
+    num_rps_update = int(max_arrival_time/CONFIG["RPS_UPDATE_INTERVAL"])
     for i in range(num_rps_update):
-        simulator.schedule_event(UpdateRPS(RPS_UPDATE_INTERVAL*i))
+        simulator.schedule_event(UpdateRPS(CONFIG["RPS_UPDATE_INTERVAL"]*i))
 
     
-    simulator.start_simulation(program_start_time)
+    simulator.start_simulation()
     simulator.print_summary()
-    simulator.write_req_arr_time()
+    simulator.write_metadata_file()
     simulator.write_resource_provisioning()
     simulator.write_simulation_latency_result()
+    if simulator.arg_flags.routing_algorithm == "LCLB":
+        simulator.write_req_arr_time()
     
     # simulator.plot_and_save_resource_provisioning()
     # dag.print_and_plot_processing_time()
     # dag.print_and_plot_queuing_time()
     # dag.print_replica_num_request
     
-    print("CNT_DELAYED_ROUTING: ", CNT_DELAYED_ROUTING)
-    ts0 = list()
-    sc_repl0 = list()
-    for svc in simulator.dummy[0]:
-        for elem in simulator.dummy[0][svc]:
-            ts0.append(elem[0])
-            sc_repl0.append(elem[1])
-    ts1 = list()
-    sc_repl1 = list()
-    for svc in simulator.dummy[1]:
-        for elem in simulator.dummy[1][svc]:
-            ts1.append(elem[0])
-            sc_repl1.append(elem[1])
-        
-    for svc in simulator.dummy[0]:
-        plt.plot(ts0, sc_repl0, label=svc+" cluster0", marker='x')
-    for svc in simulator.dummy[1]:
-        plt.plot(ts1, sc_repl1, label=svc+" cluster1", marker='x')
-    plt.legend(bbox_to_anchor=(1, 1), loc='upper left')
-    plt.show()
+    print("CNT_DELAYED_ROUTING: ", CONFIG["CNT_DELAYED_ROUTING"])
+    
+    # ts0 = list()
+    # sc_repl0 = list()
+    # for svc in simulator.dummy[0]:
+    #     for elem in simulator.dummy[0][svc]:
+    #         ts0.append(elem[0])
+    #         sc_repl0.append(elem[1])
+    # ts1 = list()
+    # sc_repl1 = list()
+    # for svc in simulator.dummy[1]:
+    #     for elem in simulator.dummy[1][svc]:
+    #         ts1.append(elem[0])
+    #         sc_repl1.append(elem[1])
+    # for svc in simulator.dummy[0]:
+    #     plt.plot(ts0, sc_repl0, label=svc+" cluster0", marker='x')
+    # for svc in simulator.dummy[1]:
+    #     plt.plot(ts1, sc_repl1, label=svc+" cluster1", marker='x')
+    # plt.legend(bbox_to_anchor=(1, 1), loc='upper left')
+    # plt.show()
