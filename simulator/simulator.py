@@ -1524,6 +1524,8 @@ class Simulator:
         self.routing_weight = [dict(), dict()]
         self.routing_weight_log = list()
         
+        self.queueing_function = dict()
+        
         self.c0_num_replicas_recommendation = list()
         self.c1_num_replicas_recommendation = list()
         self.program_start_ts = time.time()
@@ -1720,8 +1722,48 @@ class Simulator:
                 for e in elem:
                     line += (str(e) + ",")
                 file1.write(line[:-1]+'\n')
-            file1.close() 
+            file1.close()
+            
+    def load_queueing_function(self, fname, svc):
+        path_ = self.get_output_dir() + "/" + fname
+        temp_iat = list()
+        qt = list()
+        with open(path_, "r") as f_:
+            li = f_.readlines()
+            for elem in li:
+                elem = elem.split(",")
+                # elem[0]: inter arrival time
+                # elem[1]: queueing time
+                temp_iat.append(float(elem[0]))
+                qt.append(float(elem[1]))
+        iat = list()
+        for i in range(len(temp_iat)):
+            if i == 0:
+                prev = 0
+            else:
+                prev = temp_iat[i-1]
+            curr = temp_iat[i]
+            iat.append([prev, curr])
+        self.queueing_function[svc] = [iat, qt]
     
+    def binary_search(self, arr, low, high, target):
+        if high >= low:
+            mid = (high + low) // 2
+            if target >= arr[mid][0]  and  target <= arr[mid][1]:
+                return mid
+            elif target < arr[mid][0]:
+                return self.binary_search(arr, low, mid - 1, target)
+            else:
+                return self.binary_search(arr, mid + 1, high, target)
+        else:
+            utils.error_handling("binary search fail: {}, {}".format(svc.name, target))
+    
+    def predict_queueing_time(self, svc, target_iat):
+        iat = self.queueing_function[svc][0]
+        qt = self.queueing_function[svc][1]
+        idx = self.binary_search(iat, 0, len(iat)-1, target_iat)
+        print("target_iat,{}, iat[{}-{}], prediction,{}".format(target_iat, iat[idx][0], iat[idx][1], qt[idx]))
+        return qt[idx]
         
     def schedule_event(self, event):
         # if LOG_MACRO: utils.print_log("DEBUG", "Scheduled: " + event.name + " event at " + str(event.scheduled_time))
@@ -3359,7 +3401,12 @@ if __name__ == "__main__":
                 repl.num_req_per_millisecond = 0
         simulator.schedule_event(UpdateRoutingWeight(CONFIG["MILLISECOND_LOAD_UPDATE"]*i))
 
-    
+    for svc in dag.all_service:
+        if svc.name.find("User") == -1:
+            simulator.load_queueing_function("postprocessed_queuing_function-"+svc.name+".txt", svc)
+        # if svc.name == "A":
+        #     temp_svc = svc
+    # simulator.predict_queueing_time(temp_svc, 30.1)
     simulator.start_simulation()
     simulator.print_summary()
     simulator.write_metadata_file()
