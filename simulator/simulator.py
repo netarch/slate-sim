@@ -3470,7 +3470,7 @@ if __name__ == "__main__":
     num_scaledown_check = int(max_arrival_time/CONFIG["SCALE_DOWN_PERIOD"])
     for i in range(num_scaledown_check):
         if i > 5:
-            simulator.schedule_event(CheckScaleDown(CONFIG["SCALE_DOWN_PERIOD"]*i)+3000)
+            simulator.schedule_event(CheckScaleDown(CONFIG["SCALE_DOWN_PERIOD"]*i+3000))
       
     ## Deprecated      
     # # Schedule autoscaling check event every 30 sec
