@@ -2899,21 +2899,22 @@ class ProcessRequest(Event):
         # self.dst_replica.service.func_interarr_to_queuing[target_req.ewma_interarrtime] = queuing_time
         # self.dst_replica.service.interarr_to_queuing.append([target_req.ewma_interarrtime, queuing_time, self.scheduled_time, target_req.queue_arrival_time])
         # queuing_time = self.scheduled_time - target_req.queue_arrival_time # queuing time of the target request
-        assert target_req in self.dst_replica.queueing_start_time
-        assert target_req in self.dst_replica.ewma_interarrtime
-        queueing_time = self.scheduled_time - self.dst_replica.queueing_start_time[target_req]
-        if self.dst_replica.is_warm:
-            self.dst_replica.service.interarr_to_queuing.append([self.dst_replica.ewma_interarrtime[target_req] \
-                                                                , self.dst_replica.moving_avg_interarr_time[target_req][0] \
-                                                                , self.dst_replica.moving_avg_interarr_time[target_req][1] \
-                                                                , self.dst_replica.moving_avg_interarr_time[target_req][2] \
-                                                                , self.dst_replica.moving_avg_interarr_time[target_req][3] \
-                                                                , self.dst_replica.moving_avg_interarr_time[target_req][4] \
-                                                                , queueing_time])
-        del self.dst_replica.moving_avg_interarr_time[target_req]
-        del self.dst_replica.queueing_start_time[target_req]
-        del self.dst_replica.ewma_interarrtime[target_req]
         
+        if CONFIG["ROUTING_ALGORITHM"] == "queueing_prediction":
+            assert target_req in self.dst_replica.queueing_start_time
+            assert target_req in self.dst_replica.ewma_interarrtime
+            queueing_time = self.scheduled_time - self.dst_replica.queueing_start_time[target_req]
+            if self.dst_replica.is_warm:
+                self.dst_replica.service.interarr_to_queuing.append([self.dst_replica.ewma_interarrtime[target_req] \
+                                                                    , self.dst_replica.moving_avg_interarr_time[target_req][0] \
+                                                                    , self.dst_replica.moving_avg_interarr_time[target_req][1] \
+                                                                    , self.dst_replica.moving_avg_interarr_time[target_req][2] \
+                                                                    , self.dst_replica.moving_avg_interarr_time[target_req][3] \
+                                                                    , self.dst_replica.moving_avg_interarr_time[target_req][4] \
+                                                                    , queueing_time])
+            del self.dst_replica.moving_avg_interarr_time[target_req]
+            del self.dst_replica.queueing_start_time[target_req]
+            del self.dst_replica.ewma_interarrtime[target_req]
         
         if LOG_MACRO: utils.print_log("INFO", "Execute: ProcessRequest(request[" + str(target_req.id) + "]), " + self.dst_replica.to_str() + " during " + str(int(self.scheduled_time)) + "-" + str(int(self.scheduled_time + e_latency)) + ", " + str(e_latency))
         # Process request function
