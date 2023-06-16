@@ -54,7 +54,7 @@ CONFIG["SCALE_DOWN_STABILIZE_WINDOW_SIZE"]=CONFIG["SCALE_DOWN_STABILIZE_WINDOW"]
 # While scaling up, we should pick the safest (smallest) "desiredReplicas" number during last stabilizationWindowSeconds.
 
 CONFIG["CNT_DELAYED_ROUTING"]=0
-CONFIG["CROSS_CLUSTER_ROUTING"]=[0,0]
+CONFIG["CROSS_CLUSTER_ROUTING"]=dict()
 
 
 '''
@@ -454,7 +454,7 @@ class Service:
     def __init__(self, name_, mcore_per_req_, processing_t_, lb_):
         
         self.interarr_to_queuing = list()
-        # self.func_interarr_to_queuing = dict()
+        self.agg_pred_queue_time = [dict(), dict()] # key: replica, value: predicted queue time
         
         self.name = name_
         self.mcore_per_req = mcore_per_req_ # required num of milli-core per request
@@ -464,14 +464,32 @@ class Service:
         self.lb = lb_
         self.replicas = list()
         
-        self.agg_load = [list(), list()] # self.agg_load[0]: cluster0, agg_load[1]: cluster1
-        
-        
         if self.processing_time == 0:
             self.capacity_per_replica = 99999999
         else:
             self.capacity_per_replica = 1000 / self.processing_time
         print(self.name + " capacity: " + str(self.capacity_per_replica))
+    
+    
+    def cluster_agg_queue_time(self, metric, cid):
+        if len(self.agg_pred_queue_time[cid]) == 0:
+            print("{}, {}, live repl,{}".format(self.name, cid, len(self.get_cluster_live_replica(cid))))
+            for repl in self.get_cluster_live_replica(cid):
+                print("{}, received num request {}".format(repl.to_str(), repl.num_req))
+            print("other cluster live replica: {}".format(len(self.get_cluster_live_replica(0))))
+            exit()
+        if metric == "avg":
+            agg_v = sum(self.agg_pred_queue_time[cid].values())/len(self.agg_pred_queue_time[cid])
+        elif metric == "min":
+            min_k, agg_v = min(self.agg_pred_queue_time[cid].items(), key=lambda x: x[1])
+        elif metric == "max":
+            min_k, agg_v = max(self.agg_pred_queue_time[cid].items(), key=lambda x: x[1])
+        elif metric == "sum":
+            agg_v = sum(self.agg_pred_queue_time[cid].values())
+        else:
+            utils.error_handling("Invalid metric for queue time aggregation: {}".format(metric))
+        return agg_v
+    
     
     def num_schedulable_and_zero_queue_replica(self, cluster_id):
         schedulable_replicas = list()
@@ -782,19 +800,22 @@ class Service:
         
         return self.count_cluster_live_replica(cluster_id)
     
+    ## Core function of scale down
     def remove_target_replica(self, target_repl, cluster_id):
         if LOG_MACRO: utils.print_log("WARNING", "remove_target_replica, ME:{} in cluster {}, target_repl:{}".format(self.name, cluster_id, target_repl.to_str()))
         assert target_repl.is_removed == False
         target_repl.is_removed = True
         assert cluster_id == target_repl.id%2
         assert self == target_repl.service
+        
         self.replicas.remove(target_repl)
+        # del self.agg_pred_queue_time[cluster_id][target_repl]
+        
         if LOG_MACRO: utils.print_log("INFO", "\t\tDeleting replica " + target_repl.to_str())
         # WARNING: parent_replica should be parsed before the target replica gets removed from svc_to_repl.
         # Cluster 0 
-        parent_service = dag.get_parent_services(target_repl.service)
-        ##########################################################################################
         # User replica will not be removed so exclude it from parent service.
+        parent_service = dag.get_parent_services(target_repl.service)
         for p_svc in parent_service:
             if cluster_id == 0 and p_svc.name == "User1":
                 parent_service.remove(p_svc)
@@ -802,17 +823,11 @@ class Service:
             if cluster_id == 1 and p_svc.name == "User0":
                 if LOG_MACRO: utils.print_log("INFO", "\t\tExclude User0 from cluster {} {}'s parent service".format(cluster_id, target_repl.to_str()))
                 parent_service.remove(p_svc)
-        ############################################################################################
         
         all_parent_replica = list()
         for p_svc in parent_service:
             for p_repl in dag.get_parent_replica(target_repl, p_svc):
                 all_parent_replica.append(p_repl)
-                
-        # if LOG_MACRO: utils.print_log("DEBUG", "\tall_parent_replica of " + self.name + " cluster " + str(cluster_id))
-        # for repl in all_parent_replica:
-        #     if LOG_MACRO: utils.print_log("DEBUG", "\t\t" + repl.to_str())
-        
         dag.deregister_replica(target_repl)
         placement.evict_replica_and_free_core(target_repl)
         if LOG_MACRO: utils.print_log("WARNING", "\t\tReplica " + target_repl.to_str() + " is deleted from dag and placement. ")
@@ -916,33 +931,34 @@ class Service:
             # if repl.update_status("(scale_down {} in {})".format(self.name, cluster_id)) == "Ready": # BUG
             if repl.get_status() == "Ready":
                 instant_scale_down_replica.append(repl)
-                
             # elif repl.update_status("(scale_down {} in {})".format(self.name, cluster_id)) == "Active": # BUG
             elif repl.get_status() == "Active":
                 delayed_scale_down_replica.append(repl)
-                
             else:
                 utils.error_handling("scale_down, Invalid status, Replica " + repl.to_str())
             ####################################
-            ####################################
             repl.is_dead = True
+            if repl in repl.service.agg_pred_queue_time[cluster_id]:
+                del repl.service.agg_pred_queue_time[cluster_id][repl]
+            ####################################
             if LOG_MACRO: utils.print_log("WARNING", "\t{}, becomes dead. {}, num_pending: {}, child_oustanding: {}".format(repl.to_str(), repl.get_status(), repl.num_pending_request, repl.get_total_num_outstanding_response()))
-        if LOG_MACRO: utils.print_log("WARNING", "")
-        
-        
+            
+        if len(repl.service.agg_pred_queue_time[cluster_id]) == 0:
+            print("empty agg pred queue time: {}-{}, num_live_repl,{}".format(repl.service.name, cluster_id, new_tot_num_repl))
+            # exit()
+            
         if LOG_MACRO: 
             utils.print_log("WARNING", "Instant scale down of Ready replicas:")
             for repl in instant_scale_down_replica:
                 utils.print_log("WARNING", "\t{}, {}, num_pending: {}, child_oustanding: {}".format(repl.to_str(), repl.get_status(), repl.num_pending_request, repl.get_total_num_outstanding_response()))
-            utils.print_log("WARNING", "")
             
             
         if LOG_MACRO: 
             utils.print_log("WARNING", "Delaying scale down of Active replicas:")
             for repl in delayed_scale_down_replica:
                 utils.print_log("WARNING", "\t{}, {}, is_dead:{}, num_pending: {}, child_oustanding: {}".format(repl.to_str(), repl.get_status(), repl.is_dead, repl.num_pending_request, repl.get_total_num_outstanding_response()))
-            utils.print_log("WARNING", "")
-            
+        
+        #$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
         for target_repl in instant_scale_down_replica:
             self.remove_target_replica(target_repl, cluster_id)
             
@@ -963,6 +979,8 @@ class Replica:
         self.moving_avg_interarr_time = dict()
         self.queueing_start_time = dict()
         self.ewma_interarrtime = dict()
+        self.pred_queue_time = list()
+        self.pred_history_size = 20 # for delayed information
         
         self.num_req_per_millisecond = 0
         
@@ -1327,7 +1345,7 @@ class Replica:
     def is_delayed_schedulable(self, t_):
         for elem in self.repl_avail_mcore_history[::-1]:
             ## WARNING: hardcoded delay. assuming inter-region multi-clusters
-            if (t_ - elem[0]) > network_latency.far_inter_region:
+            if (t_ - elem[0]) > network_latency.far_inter_region: ## NOTE: network latency is hardcoded
                 delayed_avail_core = elem[1]
                 if elem[1] >= self.service.mcore_per_req:
                     if LOG_MACRO: utils.print_log("DEBUG", self.to_str() + "is delayed schedulable - avail core(" +  str(delayed_avail_core) + " at time " + str(elem[0]) + ") > " + self.service.name + "(required core: "+ str(self.service.mcore_per_req) +")")
@@ -1525,6 +1543,8 @@ class Simulator:
         self.routing_weight_log = list()
         
         self.queueing_function = dict()
+        self.num_started_req = 0
+        self.warmup = False
         
         self.c0_num_replicas_recommendation = list()
         self.c1_num_replicas_recommendation = list()
@@ -1699,23 +1719,14 @@ class Simulator:
         # assert path_to_autoscaler_cluster_0 != path_to_autoscaler_cluster_1
         # file_write_autoscaler_timestamp(self.cluster0_capacity, path=path_to_autoscaler_cluster_0)
         # file_write_autoscaler_timestamp(self.cluster1_capacity, path=path_to_autoscaler_cluster_1)
-        
-    def write_interarr_to_queuing_function(self):
-        for svc in dag.all_service:
-            fname = "queuing_function-"+svc.name+".txt"
-            path_ = self.get_output_dir() + "/" + fname
-            sorted_dict = dict(sorted(svc.func_interarr_to_queuing.items()))
-            file1 = open(path_, 'w')
-            for k, v in sorted_dict.items():
-                file1.write(str(k) + ','+ str(v) + '\n')
-            file1.close()
+
     
     def write_interarr_to_queuing_list(self):
         for svc in dag.all_service:
             fname = "queuing_list-"+svc.name+".txt"
             path_ = self.get_output_dir() + "/" + fname
             file1 = open(path_, 'w')
-            col = "ewma_inter_arrival_time,moving_avg_inter_arrival_time,queuing_time\n"
+            col = "ewma_inter_arrival_time,moving_avg_inter_arrival_time_20,moving_avg_inter_arrival_time_15,moving_avg_inter_arrival_time_12,moving_avg_inter_arrival_time_10,moving_avg_inter_arrival_time_5,queuing_time\n"
             file1.write(col)
             for elem in svc.interarr_to_queuing:
                 line = str()
@@ -1725,15 +1736,14 @@ class Simulator:
             file1.close()
             
     def load_queueing_function(self, fname, svc):
-        path_ = self.get_output_dir() + "/" + fname
+        # path_ = self.get_output_dir() + "/" + fname
+        path_ = "log/sample-latencyfunc2/three_depth/RoundRobin-heuristic_TE/" + fname
         temp_iat = list()
         qt = list()
         with open(path_, "r") as f_:
             li = f_.readlines()
             for elem in li:
                 elem = elem.split(",")
-                # elem[0]: inter arrival time
-                # elem[1]: queueing time
                 temp_iat.append(float(elem[0]))
                 qt.append(float(elem[1]))
         iat = list()
@@ -1761,8 +1771,11 @@ class Simulator:
     def predict_queueing_time(self, svc, target_iat):
         iat = self.queueing_function[svc][0]
         qt = self.queueing_function[svc][1]
-        idx = self.binary_search(iat, 0, len(iat)-1, target_iat)
-        print("target_iat,{}, iat[{}-{}], prediction,{}".format(target_iat, iat[idx][0], iat[idx][1], qt[idx]))
+        if target_iat > iat[-1][1]:
+            idx = -1
+        else:
+            idx = self.binary_search(iat, 0, len(iat)-1, target_iat)
+        # print("target_iat,{}, iat[{}-{}], prediction,{}".format(target_iat, iat[idx][0], iat[idx][1], qt[idx]))
         return qt[idx]
         
     def schedule_event(self, event):
@@ -2184,7 +2197,35 @@ class LoadBalancing(Event):
     def event_latency(self):
         return 0
         # return uniform(1,2)
-        
+    ###################################################################
+    def heuristic_TE(self, cid, other_cid, dst_svc, local_can, remote_can, schd_t):
+        local_schd_replicas, local_zq_replicas, num_schd_cluster_repl, num_zero_queue_cluster_repl = dst_svc.num_schedulable_and_zero_queue_replica(cid)
+        if num_schd_cluster_repl > 0: # local routing. local cluster has enough resource.
+            superset_candidates = local_schd_replicas
+        if num_zero_queue_cluster_repl > 0: # local routing. local cluster has enough resource.
+            superset_candidates = local_zq_replicas
+        else: # check if the remote cluster has available resource
+            if simulator.arg_flags.delayed_information:
+                remote_schd_replicas, remote_num_schd_cluster_repl = dst_svc.num_delayed_schedulable_replica(other_cid, schd_t + 0)
+            else:
+                remote_schd_replicas, remote_zq_replicas, remote_num_schd_cluster_repl, remote_num_zero_queue_cluster_repl = dst_svc.num_schedulable_and_zero_queue_replica(other_cid)
+            if remote_num_schd_cluster_repl > 0:
+                superset_candidates = remote_schd_replicas
+            else:
+                superset_candidates = local_can
+        verifying_superset_candidates = placement.svc_to_repl[cid][dst_svc]
+        for repl in verifying_superset_candidates:
+            if repl not in local_can and repl not in remote_can:
+                utils.error_handling("replica {} is not included neither in local candidate nor in remote candidate.".format(repl.to_str()))
+        dst_replica_candidates = list()
+        for repl in superset_candidates:
+            if repl.is_dead == False:
+                dst_replica_candidates.append(repl)
+            else:
+                if LOG_MACRO: utils.print_log("INFO", "(LB), Replica "+repl.to_str()+" was dead. It will be excluded from lb dst candidate.")
+        return dst_replica_candidates
+    ###################################################################
+    
     # @profile
     def execute_event(self):
         if LOG_MACRO: utils.print_log("INFO", "Start LB event! (src_replica: {})".format(self.src_replica.to_str()))
@@ -2197,6 +2238,11 @@ class LoadBalancing(Event):
             
         e_latency = self.event_latency()
         
+        if  simulator.warmup == False:
+            simulator.num_started_req += 1
+            if simulator.num_started_req > 2000: # NOTE: hardcoded
+                simulator.warmup = True
+            
         # Step 1: Find replica candidates
         # Step 2: Pick one replica from the candidates.
         
@@ -2233,7 +2279,7 @@ class LoadBalancing(Event):
                             dst_replica_candidates.append(repl)
                         else:
                             if LOG_MACRO: utils.print_log("INFO", "Replica "+repl.to_str()+" was dead. It will be excluded from lb dst candidate.")
-        
+                            
         elif CONFIG["ROUTING_ALGORITHM"] == "heuristic_TE":
             ## This is naive implementation of request routing.
             ## Assumption: it assumes that you know the available resource of the remote cluster magically.
@@ -2244,52 +2290,95 @@ class LoadBalancing(Event):
                 other_cluster = 0
             local_candidate = self.dst_service.get_cluster_replica(self.src_replica.cluster_id)
             remote_candidate = self.dst_service.get_cluster_replica(other_cluster)
-            
-            ## WARNING!!!
-            ## NOTE: hardcode. Allow the request route only from the cluster 0(bursty) to the cluster 1(non-bursty)
-            ###############################################
-            # if self.src_replica.cluster_id == 0: 
-            ###############################################
-            
-            ###################################################################
-            local_schd_replicas, local_zq_replicas, num_schd_cluster_repl, num_zero_queue_cluster_repl = self.dst_service.num_schedulable_and_zero_queue_replica(self.src_replica.cluster_id)
-            if num_schd_cluster_repl > 0: # local routing. local cluster has enough resource.
-                superset_candidates = local_schd_replicas
-            if num_zero_queue_cluster_repl > 0: # local routing. local cluster has enough resource.
-                superset_candidates = local_zq_replicas
-            else: # check if the remote cluster has available resource
-                if simulator.arg_flags.delayed_information:
-                    remote_schd_replicas, remote_num_schd_cluster_repl = self.dst_service.num_delayed_schedulable_replica(other_cluster, self.scheduled_time + e_latency)
-                else:
-                    remote_schd_replicas, remote_zq_replicas, remote_num_schd_cluster_repl, remote_num_zero_queue_cluster_repl = self.dst_service.num_schedulable_and_zero_queue_replica(other_cluster)
-                if remote_num_schd_cluster_repl > 0:
-                    superset_candidates = remote_schd_replicas
-                    CONFIG["CROSS_CLUSTER_ROUTING"][self.src_replica.cluster_id] += 1
-                else:
-                    superset_candidates = local_candidate
-            
-            ## ERROR Handling    
-            verifying_superset_candidates = placement.svc_to_repl[self.src_replica.cluster_id][self.dst_service]
-            for repl in verifying_superset_candidates:
-                if repl not in local_candidate and repl not in remote_candidate:
-                    utils.error_handling("replica {} is not included neither in local candidate nor in remote candidate.".format(repl.to_str()))
-            ###################################################################
-            
-            # Cluster 1,         
-            # Strong assumption: Cluster 1 is non-bursty. Hence, it always routes request to the local replica only.
-            #################################################
-            # else:
-            #     superset_candidates = local_candidate
-            #################################################
-            
-            dst_replica_candidates = list()
-            for repl in superset_candidates:
-                if repl.is_dead == False:
-                    dst_replica_candidates.append(repl)
-                else:
-                    if LOG_MACRO: utils.print_log("INFO", "(LB), Replica "+repl.to_str()+" was dead. It will be excluded from lb dst candidate.")
+            dst_replica_candidates = self.heuristic_TE(self.src_replica.cluster_id, other_cluster, self.dst_service, local_candidate, remote_candidate, self.scheduled_time)
+        
+        elif CONFIG["ROUTING_ALGORITHM"] == "queueing_prediction":
+            if self.src_replica.cluster_id == 0:
+                other_cluster = 1
+            else:
+                other_cluster = 0
+            local_replica = self.dst_service.get_cluster_replica(self.src_replica.cluster_id)
+            remote_replica = self.dst_service.get_cluster_replica(other_cluster)
+            if simulator.warmup:
+                # inverse_latency = list()
+                # for repl in self.dst_service.replicas:
+                #     if repl.is_dead == False:
+                #         if len(repl.pred_queue_time) < 2:
+                #             pred_q_t = 1
+                #         else:
+                #             pred_q_t = repl.pred_queue_time[-1]
+                #         if self.src_replica.cluster_id == repl.cluster_id:
+                #             pred_latency = pred_q_t + self.dst_service.processing_time + network_latency.same_rack
+                #         else:
+                #             pred_latency = pred_q_t + self.dst_service.processing_time + network_latency.far_inter_region
+                #         inverse_latency.append([repl, pred_latency, 1/pred_latency])
+                # sum_of_inverse = sum(x[2] for x in inverse_latency)
+                # for i in range(len(inverse_latency)):
+                #     w_ = inverse_latency[i][2]/sum_of_inverse
+                #     inverse_latency[i].append(w_)
+                # # inverse_latency.sort(key=lambda x: x[3])
+                # inverse_latency.sort(key=lambda x: x[1])
+                # i = 0
+                # gradient = 0
+                # prev = inverse_latency[0][1]
+                # for elem in inverse_latency:
+                #     curr = elem[1]
+                #     gradient = (curr - prev)/prev
+                #     elem.append(gradient)
+                #     # prev = elem[1]
+                #     i += 1
+                # dst_replica_candidates = list()
+                # gradient_threshold = 0.1
+                # for elem in inverse_latency:
+                #     if elem[4] > gradient_threshold:
+                #         break
+                #     dst_replica_candidates.append(elem)
                     
-        #####$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
+                
+                # dst_replica_candidates = [x[0] for x in dst_replica_candidates]
+                # print("{}, {}".format(self.dst_service.name, len(dst_replica_candidates)))
+                # for elem in inverse_latency:
+                #     print("src,{}, dst_can,{}, pred,{}, gradient,{}, inverse_pred,{}, weight,{}".format(self.src_replica.to_str(), elem[0].to_str(), elem[1], elem[4], elem[2], elem[3]*100))
+                # print()
+                
+                # #################################################################################
+                agg_metric = "min" # avg, min, max
+                local_cluster_queueing_metric = self.dst_service.cluster_agg_queue_time(agg_metric, self.src_replica.cluster_id)
+                remote_cluster_queueing_metric = self.dst_service.cluster_agg_queue_time(agg_metric, other_cluster)
+                local_agg_pred_latency = local_cluster_queueing_metric \
+                                        + self.dst_service.processing_time \
+                                        + network_latency.same_rack ## NOTE: network latency is hardcoded
+                remote_agg_pred_latency = remote_cluster_queueing_metric \
+                                        + self.dst_service.processing_time \
+                                        + network_latency.far_inter_region ## NOTE: network latency is hardcoded
+                # print("{} local_agg_pred_latency:{} ({}+{}+{})".format(self.dst_service.name, local_agg_pred_latency, int(self.dst_service.cluster_agg_queue_time(agg_metric, self.src_replica.cluster_id)), self.dst_service.processing_time, network_latency.same_rack))
+                # print("{} remote_agg_pred_latency:{} ({}+{}+{})".format(self.dst_service.name, remote_agg_pred_latency, int(self.dst_service.cluster_agg_queue_time(agg_metric, other_cluster)), self.dst_service.processing_time, network_latency.far_inter_region))
+                if local_agg_pred_latency < remote_agg_pred_latency:
+                    dst_replica_candidates = local_replica
+                else:
+                    dst_replica_candidates = remote_replica
+                inverse_latency = list()
+                for repl in dst_replica_candidates:
+                    if repl.is_dead == False:
+                        if len(repl.pred_queue_time) == 0:
+                            pred_q_t = 1
+                        else:
+                            pred_q_t = repl.pred_queue_time[-1]
+                        if self.src_replica.cluster_id == repl.cluster_id:
+                            pred_latency = pred_q_t + self.dst_service.processing_time + network_latency.same_rack
+                        else:
+                            pred_latency = pred_q_t + self.dst_service.processing_time + network_latency.far_inter_region
+                        inverse_latency.append([repl, pred_latency, 1/pred_latency])
+                sum_of_inverse = sum(x[2] for x in inverse_latency)
+                for i in range(len(inverse_latency)):
+                    w_ = inverse_latency[i][2]/sum_of_inverse
+                    inverse_latency[i].append(w_)
+                dst_replica_candidates = random.choices([x[0] for x in inverse_latency], weights=[x[3] for x in inverse_latency], k=1)
+                # #################################################################################
+            else:
+                dst_replica_candidates = self.heuristic_TE(self.src_replica.cluster_id, other_cluster, self.dst_service, local_replica, remote_replica, self.scheduled_time)
+                
+                
         elif CONFIG["ROUTING_ALGORITHM"] == "capacity_TE":
             if self.src_replica.cluster_id == 0: other_cluster = 1
             else: other_cluster = 0
@@ -2302,7 +2391,6 @@ class LoadBalancing(Event):
                     superset_candidates = local_candidate
                 else:
                     superset_candidates = remote_candidate
-                    CONFIG["CROSS_CLUSTER_ROUTING"][self.src_replica.cluster_id] += 1
             else:
                 superset_candidates = local_candidate
                 
@@ -2413,6 +2501,14 @@ class LoadBalancing(Event):
         else:
             utils.error_handling(self.policy + " load balancing policy is not supported.")
 
+        if self.src_replica.cluster_id != dst_replica.cluster_id:
+            if self.src_replica.cluster_id not in CONFIG["CROSS_CLUSTER_ROUTING"]:
+                CONFIG["CROSS_CLUSTER_ROUTING"][self.src_replica.cluster_id] = 0
+            CONFIG["CROSS_CLUSTER_ROUTING"][self.src_replica.cluster_id] += 1
+            key = self.src_replica.service.name +"-"+str(self.src_replica.cluster_id)
+            if key not in CONFIG["CROSS_CLUSTER_ROUTING"]:
+                CONFIG["CROSS_CLUSTER_ROUTING"][key] = 0
+            CONFIG["CROSS_CLUSTER_ROUTING"][key] += 1
         dst_replica.num_pending_request += 1
         dst_replica.processing_queue_size += 1
 
@@ -2439,7 +2535,7 @@ class LoadBalancing(Event):
         dst_replica.num_req_per_millisecond += 1
         
         ## Record whether this request comes from the local upstream replica
-        if dst_replica.cluster_id == self.src_replica.cluster_id:
+        if self.src_replica.cluster_id == dst_replica.cluster_id:
             dst_replica.increment_local_num_req()
         else:
             dst_replica.increment_remote_num_req()
@@ -2498,19 +2594,6 @@ class LoadBalancing(Event):
                 min_wma = wma
                 ret = repl
         return ret        
-        
-        # 0.632
-        # 0.233 = (1 – 0.632) * 0.632
-        # def calc_ewma(li):
-        #     weight = 0.632
-        #     data = list()
-        #     for i in range(len(li)):
-        #         elem = li[len(li) - i]
-        #         if i == 0:
-        #             weight = 0.632
-        #         else:
-        #             weight = (1 - weight)*weight
-        #         data.append(elem*weight)
 
         
     def moving_average(self, replicas):
@@ -2635,9 +2718,23 @@ class RecvRequest(Event):
         if len(self.dst_replica.intarrival_time_list) > self.dst_replica.arr_time_window_size:
             self.dst_replica.intarrival_time_list.pop(0)
         m_avg_arr_t = sum(self.dst_replica.intarrival_time_list)/len(self.dst_replica.intarrival_time_list)
-        self.dst_replica.moving_avg_interarr_time[self.request] = m_avg_arr_t
+        m_avg_arr_t_2 = sum(self.dst_replica.intarrival_time_list[-15:])/len(self.dst_replica.intarrival_time_list[-15:])
+        m_avg_arr_t_3 = sum(self.dst_replica.intarrival_time_list[-12:])/len(self.dst_replica.intarrival_time_list[-12:])
+        m_avg_arr_t_4 = sum(self.dst_replica.intarrival_time_list[-10:])/len(self.dst_replica.intarrival_time_list[-10:])
+        m_avg_arr_t_5 = sum(self.dst_replica.intarrival_time_list[-5:])/len(self.dst_replica.intarrival_time_list[-5:])
+        self.dst_replica.moving_avg_interarr_time[self.request] = [m_avg_arr_t, m_avg_arr_t_2, m_avg_arr_t_3, m_avg_arr_t_4, m_avg_arr_t_5]
         # self.request.ewma_interarrtime = ewma
         self.dst_replica.cur_ewma_intarrtime = ewma
+        
+        prediction = simulator.predict_queueing_time(self.dst_replica.service, ewma) # UPDATE QUEUEING TIME PREDICTION 
+        # prediction = simulator.predict_queueing_time(self.dst_replica.service, m_avg_arr_t_4) # UPDATE QUEUEING TIME PREDICTION 
+        
+        self.dst_replica.pred_queue_time.append(prediction)
+        self.dst_replica.service.agg_pred_queue_time[self.dst_replica.cluster_id][self.dst_replica] = prediction
+        # if self.dst_replica.service.name == "D" and self.dst_replica.cluster_id == 0:
+        #     print("Insert {}".format(self.dst_replica.to_str()))
+        if len(self.dst_replica.pred_queue_time) > self.dst_replica.pred_history_size:
+            self.dst_replica.pred_queue_time.pop(0)
         self.dst_replica.most_recent_arrival_time = self.scheduled_time
         # self.request.queue_arrival_time = self.scheduled_time
         assert self.request not in self.dst_replica.queueing_start_time
@@ -2806,7 +2903,13 @@ class ProcessRequest(Event):
         assert target_req in self.dst_replica.ewma_interarrtime
         queueing_time = self.scheduled_time - self.dst_replica.queueing_start_time[target_req]
         if self.dst_replica.is_warm:
-            self.dst_replica.service.interarr_to_queuing.append([self.dst_replica.ewma_interarrtime[target_req], self.dst_replica.moving_avg_interarr_time[target_req], queueing_time])
+            self.dst_replica.service.interarr_to_queuing.append([self.dst_replica.ewma_interarrtime[target_req] \
+                                                                , self.dst_replica.moving_avg_interarr_time[target_req][0] \
+                                                                , self.dst_replica.moving_avg_interarr_time[target_req][1] \
+                                                                , self.dst_replica.moving_avg_interarr_time[target_req][2] \
+                                                                , self.dst_replica.moving_avg_interarr_time[target_req][3] \
+                                                                , self.dst_replica.moving_avg_interarr_time[target_req][4] \
+                                                                , queueing_time])
         del self.dst_replica.moving_avg_interarr_time[target_req]
         del self.dst_replica.queueing_start_time[target_req]
         del self.dst_replica.ewma_interarrtime[target_req]
@@ -3001,7 +3104,9 @@ class RecvSendBack(Event):
                 assert self.src_replica.is_user() == False
                 if LOG_MACRO: utils.print_log("WARNING", "RecvSendBack, Delayed scale down {} by {}!".format(self.src_replica.to_str(), self.dst_replica.to_str()))
                 if LOG_MACRO: utils.print_log("INFO", "Sender replica(" + self.src_replica.to_str() + ") was dead and it finally becomes Ready.")
+                
                 self.src_replica.service.remove_target_replica(self.src_replica, self.src_replica.cluster_id)
+                
                 if LOG_MACRO: utils.print_log("INFO", "sender replica " + self.src_replica.to_str() + " is now deleted!")
         self.dst_replica.add_to_send_back_queue(self.request, self.scheduled_time, self.src_replica.service)
         
@@ -3177,7 +3282,7 @@ def argparse_add_argument(parser):
     
     parser.add_argument("--load_balancer", type=str, default=None, help="load balancing policy", choices=["Random", "RoundRobin", "LeastRequest", "MovingAvg", "EWMA"], required=True)
     
-    parser.add_argument("--routing_algorithm", type=str, default=None, choices=["LCLB", "MCLB", "heuristic_TE", "moment_response_time", "capacity_TE"], help="routing algorithm when multi-cluster is enabled.", required=True)
+    parser.add_argument("--routing_algorithm", type=str, default=None, choices=["LCLB", "MCLB", "heuristic_TE", "moment_response_time", "capacity_TE", "queueing_prediction"], help="routing algorithm when multi-cluster is enabled.", required=True)
     
     parser.add_argument("--c0_request_arrival_file", type=str, default=None, help="path to the cluster 0 request arrival time file", required=True)
     
@@ -3392,18 +3497,20 @@ if __name__ == "__main__":
         simulator.schedule_event(UpdateRPS(CONFIG["RPS_UPDATE_INTERVAL"]*i))
         
         
-    # Schedule UpdateRPS every RPS_UPDATE_INTERVAL sec
-    num_millisecond_load_update = int(max_arrival_time/CONFIG["MILLISECOND_LOAD_UPDATE"])
-    print("num_millisecond_load_update: ", num_millisecond_load_update)
-    for i in range(int(100*(100/CONFIG["MILLISECOND_LOAD_UPDATE"])), num_millisecond_load_update):
-        if i == int(100*(100/CONFIG["MILLISECOND_LOAD_UPDATE"])):
-            for repl in dag.all_replica:
-                repl.num_req_per_millisecond = 0
-        simulator.schedule_event(UpdateRoutingWeight(CONFIG["MILLISECOND_LOAD_UPDATE"]*i))
+    # # 
+    # num_millisecond_load_update = int(max_arrival_time/CONFIG["MILLISECOND_LOAD_UPDATE"])
+    # print("num_millisecond_load_update: ", num_millisecond_load_update)
+    # for i in range(int(100*(100/CONFIG["MILLISECOND_LOAD_UPDATE"])), num_millisecond_load_update):
+    #     if i == int(100*(100/CONFIG["MILLISECOND_LOAD_UPDATE"])):
+    #         for repl in dag.all_replica:
+    #             repl.num_req_per_millisecond = 0
+    #     simulator.schedule_event(UpdateRoutingWeight(CONFIG["MILLISECOND_LOAD_UPDATE"]*i))
 
     for svc in dag.all_service:
         if svc.name.find("User") == -1:
+            # simulator.load_queueing_function("moving_avg_inter_arrival_time_10_queuing_function-"+svc.name+".txt", svc)
             simulator.load_queueing_function("postprocessed_queuing_function-"+svc.name+".txt", svc)
+            # simulator.load_queueing_function("ewma_inter_arrival_time_queuing_function-"+svc.name+".txt", svc)
         # if svc.name == "A":
         #     temp_svc = svc
     # simulator.predict_queueing_time(temp_svc, 30.1)
@@ -3415,7 +3522,7 @@ if __name__ == "__main__":
     if simulator.arg_flags.routing_algorithm == "LCLB":
         simulator.write_req_arr_time()
     # simulator.write_interarr_to_queuing_function()
-    simulator.write_interarr_to_queuing_list()
+    simulator.write_interarr_to_queuing_list() ####
     
     # simulator.plot_and_save_resource_provisioning()
     # dag.print_and_plot_processing_time()
@@ -3423,8 +3530,8 @@ if __name__ == "__main__":
     # dag.print_replica_num_request
     
     print("CNT_DELAYED_ROUTING: ", CONFIG["CNT_DELAYED_ROUTING"])
-    print("CLUSTER-0, CROSS_CLUSTER_ROUTING: ", CONFIG["CROSS_CLUSTER_ROUTING"][0])
-    print("CLUSTER-1, CROSS_CLUSTER_ROUTING: ", CONFIG["CROSS_CLUSTER_ROUTING"][1])
+    for key, value in CONFIG["CROSS_CLUSTER_ROUTING"].items():
+        print("CROSS CLUSTER {} : {}".format(key, value))
     print("TOTAL_CROSS_CLUSTER_ROUTING: ", CONFIG["CROSS_CLUSTER_ROUTING"][0] + CONFIG["CROSS_CLUSTER_ROUTING"][1])
     
     # ts0 = list()
