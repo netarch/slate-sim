@@ -3,14 +3,20 @@
 output_dir="log"
 app="three_depth"
 load_balancer="RoundRobin"
-workload="sample-opt_opt_te_metric25-3"
+workload="sample-latencyfunc2-test"
 fixed_autoscaler=0
 autoscaler_period=15000
+desired_autoscaler_metric=0.20
 delayed_information=1
 c0_request_arrival_file="request_arrival/sample-request_arrival-cluster0.txt"
 c1_request_arrival_file="request_arrival/sample-request_arrival-cluster1.txt"
 
-for routing_algorithm in "LCLB" "MCLB" "heuristic_TE"
+#for routing_algorithm in "MCLB"
+#for routing_algorithm in "capacity_TE"
+#for routing_algorithm in "heuristic_TE"
+#for routing_algorithm in "LCLB" "MCLB" "heuristic_TE" "capacity_TE"
+#for routing_algorithm in "LCLB" "MCLB" "heuristic_TE" "capacity_TE"
+for routing_algorithm in "queueing_prediction"
 do
     start=`date +%s`
     python3 simulator.py --app ${app} \
@@ -20,9 +26,10 @@ do
                         --load_balancer ${load_balancer} \
                         --fixed_autoscaler ${fixed_autoscaler} \
                         --autoscaler_period ${autoscaler_period} \
+                        --desired_autoscaler_metric ${desired_autoscaler_metric} \
                         --delayed_information ${delayed_information} \
                         --routing_algorithm ${routing_algorithm} \
-                        --output_dir ${output_dir} &
+                        --output_dir ${output_dir}
     end=`date +%s`
     runtime=$((end-start))
     echo "${routing_algorithm}: ${runtime}s"
