@@ -2213,10 +2213,10 @@ class LoadBalancing(Event):
                 superset_candidates = remote_schd_replicas
             else:
                 superset_candidates = local_can
-        verifying_superset_candidates = placement.svc_to_repl[cid][dst_svc]
-        for repl in verifying_superset_candidates:
-            if repl not in local_can and repl not in remote_can:
-                utils.error_handling("replica {} is not included neither in local candidate nor in remote candidate.".format(repl.to_str()))
+        # verifying_superset_candidates = placement.svc_to_repl[cid][dst_svc]
+        # for repl in verifying_superset_candidates:
+        #     if repl not in local_can and repl not in remote_can:
+        #         utils.error_handling("replica {} is not included neither in local candidate nor in remote candidate.".format(repl.to_str()))
         dst_replica_candidates = list()
         for repl in superset_candidates:
             if repl.is_dead == False:
@@ -2712,36 +2712,36 @@ class RecvRequest(Event):
         if LOG_MACRO: utils.print_log("INFO", "Execute: RecvRequest(request[" + str(self.request.id) + "]) in " + self.dst_replica.to_str() + "'s " + self.src_replica.service.name + " recv queue" + " during " + str(int(self.scheduled_time)) + "-" + str(int(self.scheduled_time + e_latency)))
         
         ##########################################################
-        intarrtime = self.scheduled_time - self.dst_replica.most_recent_arrival_time
-        ewma = simulator.calc_ewma(intarrtime, self.dst_replica.cur_ewma_intarrtime)
-        self.dst_replica.intarrival_time_list.append(intarrtime)
-        if len(self.dst_replica.intarrival_time_list) > self.dst_replica.arr_time_window_size:
-            self.dst_replica.intarrival_time_list.pop(0)
-        m_avg_arr_t = sum(self.dst_replica.intarrival_time_list)/len(self.dst_replica.intarrival_time_list)
-        m_avg_arr_t_2 = sum(self.dst_replica.intarrival_time_list[-15:])/len(self.dst_replica.intarrival_time_list[-15:])
-        m_avg_arr_t_3 = sum(self.dst_replica.intarrival_time_list[-12:])/len(self.dst_replica.intarrival_time_list[-12:])
-        m_avg_arr_t_4 = sum(self.dst_replica.intarrival_time_list[-10:])/len(self.dst_replica.intarrival_time_list[-10:])
-        m_avg_arr_t_5 = sum(self.dst_replica.intarrival_time_list[-5:])/len(self.dst_replica.intarrival_time_list[-5:])
-        self.dst_replica.moving_avg_interarr_time[self.request] = [m_avg_arr_t, m_avg_arr_t_2, m_avg_arr_t_3, m_avg_arr_t_4, m_avg_arr_t_5]
-        # self.request.ewma_interarrtime = ewma
-        self.dst_replica.cur_ewma_intarrtime = ewma
-        
-        prediction = simulator.predict_queueing_time(self.dst_replica.service, ewma) # UPDATE QUEUEING TIME PREDICTION 
-        # prediction = simulator.predict_queueing_time(self.dst_replica.service, m_avg_arr_t_4) # UPDATE QUEUEING TIME PREDICTION 
-        
-        self.dst_replica.pred_queue_time.append(prediction)
-        self.dst_replica.service.agg_pred_queue_time[self.dst_replica.cluster_id][self.dst_replica] = prediction
-        # if self.dst_replica.service.name == "D" and self.dst_replica.cluster_id == 0:
-        #     print("Insert {}".format(self.dst_replica.to_str()))
-        if len(self.dst_replica.pred_queue_time) > self.dst_replica.pred_history_size:
-            self.dst_replica.pred_queue_time.pop(0)
-        self.dst_replica.most_recent_arrival_time = self.scheduled_time
-        # self.request.queue_arrival_time = self.scheduled_time
-        assert self.request not in self.dst_replica.queueing_start_time
-        self.dst_replica.ewma_interarrtime[self.request] = ewma
-        self.dst_replica.queueing_start_time[self.request] = self.scheduled_time
+        if CONFIG["ROUTING_ALGORITHM"] == "queueing_prediction":
+            intarrtime = self.scheduled_time - self.dst_replica.most_recent_arrival_time
+            ewma = simulator.calc_ewma(intarrtime, self.dst_replica.cur_ewma_intarrtime)
+            self.dst_replica.intarrival_time_list.append(intarrtime)
+            if len(self.dst_replica.intarrival_time_list) > self.dst_replica.arr_time_window_size:
+                self.dst_replica.intarrival_time_list.pop(0)
+            m_avg_arr_t = sum(self.dst_replica.intarrival_time_list)/len(self.dst_replica.intarrival_time_list)
+            m_avg_arr_t_2 = sum(self.dst_replica.intarrival_time_list[-15:])/len(self.dst_replica.intarrival_time_list[-15:])
+            m_avg_arr_t_3 = sum(self.dst_replica.intarrival_time_list[-12:])/len(self.dst_replica.intarrival_time_list[-12:])
+            m_avg_arr_t_4 = sum(self.dst_replica.intarrival_time_list[-10:])/len(self.dst_replica.intarrival_time_list[-10:])
+            m_avg_arr_t_5 = sum(self.dst_replica.intarrival_time_list[-5:])/len(self.dst_replica.intarrival_time_list[-5:])
+            self.dst_replica.moving_avg_interarr_time[self.request] = [m_avg_arr_t, m_avg_arr_t_2, m_avg_arr_t_3, m_avg_arr_t_4, m_avg_arr_t_5]
+            # self.request.ewma_interarrtime = ewma
+            self.dst_replica.cur_ewma_intarrtime = ewma
+            
+            prediction = simulator.predict_queueing_time(self.dst_replica.service, ewma) # UPDATE QUEUEING TIME PREDICTION 
+            # prediction = simulator.predict_queueing_time(self.dst_replica.service, m_avg_arr_t_4) # UPDATE QUEUEING TIME PREDICTION 
+            
+            self.dst_replica.pred_queue_time.append(prediction)
+            self.dst_replica.service.agg_pred_queue_time[self.dst_replica.cluster_id][self.dst_replica] = prediction
+            # if self.dst_replica.service.name == "D" and self.dst_replica.cluster_id == 0:
+            #     print("Insert {}".format(self.dst_replica.to_str()))
+            if len(self.dst_replica.pred_queue_time) > self.dst_replica.pred_history_size:
+                self.dst_replica.pred_queue_time.pop(0)
+            self.dst_replica.most_recent_arrival_time = self.scheduled_time
+            # self.request.queue_arrival_time = self.scheduled_time
+            assert self.request not in self.dst_replica.queueing_start_time
+            self.dst_replica.ewma_interarrtime[self.request] = ewma
+            self.dst_replica.queueing_start_time[self.request] = self.scheduled_time
         ##########################################################
-        
         
         ### Record start timestamp for this service
         if self.dst_replica.cluster_id == 0:
@@ -3470,7 +3470,7 @@ if __name__ == "__main__":
     num_scaledown_check = int(max_arrival_time/CONFIG["SCALE_DOWN_PERIOD"])
     for i in range(num_scaledown_check):
         if i > 5:
-            simulator.schedule_event(CheckScaleDown(CONFIG["SCALE_DOWN_PERIOD"]*i))
+            simulator.schedule_event(CheckScaleDown(CONFIG["SCALE_DOWN_PERIOD"]*i)+3000)
       
     ## Deprecated      
     # # Schedule autoscaling check event every 30 sec
@@ -3497,23 +3497,24 @@ if __name__ == "__main__":
         simulator.schedule_event(UpdateRPS(CONFIG["RPS_UPDATE_INTERVAL"]*i))
         
         
-    # # 
-    # num_millisecond_load_update = int(max_arrival_time/CONFIG["MILLISECOND_LOAD_UPDATE"])
-    # print("num_millisecond_load_update: ", num_millisecond_load_update)
-    # for i in range(int(100*(100/CONFIG["MILLISECOND_LOAD_UPDATE"])), num_millisecond_load_update):
-    #     if i == int(100*(100/CONFIG["MILLISECOND_LOAD_UPDATE"])):
-    #         for repl in dag.all_replica:
-    #             repl.num_req_per_millisecond = 0
-    #     simulator.schedule_event(UpdateRoutingWeight(CONFIG["MILLISECOND_LOAD_UPDATE"]*i))
+    ### millisecond level capacity update for capacity based TE
+    if CONFIG["ROUTING_ALGORITHM"] == "capacity_TE":
+        num_millisecond_load_update = int(max_arrival_time/CONFIG["MILLISECOND_LOAD_UPDATE"])
+        print("num_millisecond_load_update: ", num_millisecond_load_update)
+        for i in range(int(100*(100/CONFIG["MILLISECOND_LOAD_UPDATE"])), num_millisecond_load_update):
+            if i == int(100*(100/CONFIG["MILLISECOND_LOAD_UPDATE"])):
+                for repl in dag.all_replica:
+                    repl.num_req_per_millisecond = 0
+            simulator.schedule_event(UpdateRoutingWeight(CONFIG["MILLISECOND_LOAD_UPDATE"]*i))
 
-    for svc in dag.all_service:
-        if svc.name.find("User") == -1:
-            # simulator.load_queueing_function("moving_avg_inter_arrival_time_10_queuing_function-"+svc.name+".txt", svc)
-            simulator.load_queueing_function("postprocessed_queuing_function-"+svc.name+".txt", svc)
-            # simulator.load_queueing_function("ewma_inter_arrival_time_queuing_function-"+svc.name+".txt", svc)
-        # if svc.name == "A":
-        #     temp_svc = svc
-    # simulator.predict_queueing_time(temp_svc, 30.1)
+    ### queueing function load for queueing prediction based TE
+    if CONFIG["ROUTING_ALGORITHM"] == "queueing_prediction":
+        for svc in dag.all_service:
+            if svc.name.find("User") == -1:
+                simulator.load_queueing_function("postprocessed_queuing_function-"+svc.name+".txt", svc)
+                # simulator.load_queueing_function("moving_avg_inter_arrival_time_10_queuing_function-"+svc.name+".txt", svc)
+                # simulator.load_queueing_function("ewma_inter_arrival_time_queuing_function-"+svc.name+".txt", svc)
+            
     simulator.start_simulation()
     simulator.print_summary()
     simulator.write_metadata_file()
@@ -3521,8 +3522,7 @@ if __name__ == "__main__":
     simulator.write_simulation_latency_result()
     if simulator.arg_flags.routing_algorithm == "LCLB":
         simulator.write_req_arr_time()
-    # simulator.write_interarr_to_queuing_function()
-    simulator.write_interarr_to_queuing_list() ####
+    # simulator.write_interarr_to_queuing_list()
     
     # simulator.plot_and_save_resource_provisioning()
     # dag.print_and_plot_processing_time()
