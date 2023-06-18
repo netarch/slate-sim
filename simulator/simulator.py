@@ -943,9 +943,10 @@ class Service:
             ####################################
             if LOG_MACRO: utils.print_log("WARNING", "\t{}, becomes dead. {}, num_pending: {}, child_oustanding: {}".format(repl.to_str(), repl.get_status(), repl.num_pending_request, repl.get_total_num_outstanding_response()))
             
-        if len(repl.service.agg_pred_queue_time[cluster_id]) == 0:
-            print("empty agg pred queue time: {}-{}, num_live_repl,{}".format(repl.service.name, cluster_id, new_tot_num_repl))
-            # exit()
+        if CONFIG["ROUTING_ALGORITHM"] == "queueing_prediction":
+            if len(repl.service.agg_pred_queue_time[cluster_id]) == 0:
+                print("empty agg pred queue time: {}-{}, num_live_repl,{}".format(repl.service.name, cluster_id, new_tot_num_repl))
+                # exit()
             
         if LOG_MACRO: 
             utils.print_log("WARNING", "Instant scale down of Ready replicas:")
@@ -3531,9 +3532,16 @@ if __name__ == "__main__":
     # dag.print_replica_num_request
     
     print("CNT_DELAYED_ROUTING: ", CONFIG["CNT_DELAYED_ROUTING"])
+    
+    if 0 in CONFIG["CROSS_CLUSTER_ROUTING"]:
+        print("CROSS CLUSTER {} : {}".format(0, CONFIG["CROSS_CLUSTER_ROUTING"][0]))
+    if 1 in CONFIG["CROSS_CLUSTER_ROUTING"]:
+        print("CROSS CLUSTER {} : {}".format(1, CONFIG["CROSS_CLUSTER_ROUTING"][1]))
+    if 0 in CONFIG["CROSS_CLUSTER_ROUTING"] and 1 in CONFIG["CROSS_CLUSTER_ROUTING"]:
+        print("TOTAL_CROSS_CLUSTER_ROUTING: {}",format(CONFIG["CROSS_CLUSTER_ROUTING"][0] + CONFIG["CROSS_CLUSTER_ROUTING"][1]))
     for key, value in CONFIG["CROSS_CLUSTER_ROUTING"].items():
-        print("CROSS CLUSTER {} : {}".format(key, value))
-    print("TOTAL_CROSS_CLUSTER_ROUTING: ", CONFIG["CROSS_CLUSTER_ROUTING"][0] + CONFIG["CROSS_CLUSTER_ROUTING"][1])
+        if key != 0 and key != 1:
+            print("CROSS CLUSTER {} : {}".format(key, value))
     
     # ts0 = list()
     # sc_repl0 = list()
