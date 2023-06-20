@@ -1083,13 +1083,13 @@ class Replica:
             
     def calc_moment_latency(self, src_repl):
         if self.cluster_id == src_repl.cluster_id:
-            network_lat = 0
+            network_lat = network_latency.same_rack
         else:
-            network_lat = 40
+            network_lat = network_latency.far_inter_region # hardcoded
         queuing = self.processing_queue_size * self.service.processing_time
         processing_t = self.service.processing_time
         
-        est_moment_latency = network_lat*2 + queuing + processing_t
+        est_moment_latency = network_lat + queuing + processing_t
         return est_moment_latency
     
     def get_status(self):
@@ -1738,7 +1738,7 @@ class Simulator:
             
     def load_queueing_function(self, fname, svc):
         # path_ = self.get_output_dir() + "/" + fname
-        path_ = "log/sample-latencyfunc2/three_depth/RoundRobin-heuristic_TE/" + fname
+        path_ = "log/sample-latencyfunc2-test/three_depth/RoundRobin-heuristic_TE/" + fname
         temp_iat = list()
         qt = list()
         with open(path_, "r") as f_:
@@ -2301,6 +2301,8 @@ class LoadBalancing(Event):
             local_replica = self.dst_service.get_cluster_replica(self.src_replica.cluster_id)
             remote_replica = self.dst_service.get_cluster_replica(other_cluster)
             if simulator.warmup:
+                
+                ## 1. queueing time gradient based cut
                 # inverse_latency = list()
                 # for repl in self.dst_service.replicas:
                 #     if repl.is_dead == False:
@@ -2334,30 +2336,47 @@ class LoadBalancing(Event):
                 #     if elem[4] > gradient_threshold:
                 #         break
                 #     dst_replica_candidates.append(elem)
-                    
-                
                 # dst_replica_candidates = [x[0] for x in dst_replica_candidates]
                 # print("{}, {}".format(self.dst_service.name, len(dst_replica_candidates)))
                 # for elem in inverse_latency:
                 #     print("src,{}, dst_can,{}, pred,{}, gradient,{}, inverse_pred,{}, weight,{}".format(self.src_replica.to_str(), elem[0].to_str(), elem[1], elem[4], elem[2], elem[3]*100))
                 # print()
                 
-                # #################################################################################
-                agg_metric = "min" # avg, min, max
-                local_cluster_queueing_metric = self.dst_service.cluster_agg_queue_time(agg_metric, self.src_replica.cluster_id)
-                remote_cluster_queueing_metric = self.dst_service.cluster_agg_queue_time(agg_metric, other_cluster)
-                local_agg_pred_latency = local_cluster_queueing_metric \
-                                        + self.dst_service.processing_time \
-                                        + network_latency.same_rack ## NOTE: network latency is hardcoded
-                remote_agg_pred_latency = remote_cluster_queueing_metric \
-                                        + self.dst_service.processing_time \
-                                        + network_latency.far_inter_region ## NOTE: network latency is hardcoded
-                # print("{} local_agg_pred_latency:{} ({}+{}+{})".format(self.dst_service.name, local_agg_pred_latency, int(self.dst_service.cluster_agg_queue_time(agg_metric, self.src_replica.cluster_id)), self.dst_service.processing_time, network_latency.same_rack))
-                # print("{} remote_agg_pred_latency:{} ({}+{}+{})".format(self.dst_service.name, remote_agg_pred_latency, int(self.dst_service.cluster_agg_queue_time(agg_metric, other_cluster)), self.dst_service.processing_time, network_latency.far_inter_region))
-                if local_agg_pred_latency < remote_agg_pred_latency:
-                    dst_replica_candidates = local_replica
-                else:
-                    dst_replica_candidates = remote_replica
+                # ## 2. avg/min/max of aggregated queueing time in cluster-wise + weight
+                # agg_metric = "min" # avg, min, max
+                # local_cluster_queueing_metric = self.dst_service.cluster_agg_queue_time(agg_metric, self.src_replica.cluster_id)
+                # remote_cluster_queueing_metric = self.dst_service.cluster_agg_queue_time(agg_metric, other_cluster)
+                # local_agg_pred_latency = local_cluster_queueing_metric \
+                #                         + self.dst_service.processing_time \
+                #                         + network_latency.same_rack ## NOTE: network latency is hardcoded
+                # remote_agg_pred_latency = remote_cluster_queueing_metric \
+                #                         + self.dst_service.processing_time \
+                #                         + network_latency.far_inter_region ## NOTE: network latency is hardcoded
+                # if local_agg_pred_latency < remote_agg_pred_latency:
+                #     dst_replica_candidates = local_replica
+                # else:
+                #     dst_replica_candidates = remote_replica
+                # inverse_latency = list()
+                # for repl in dst_replica_candidates:
+                #     if repl.is_dead == False:
+                #         if len(repl.pred_queue_time) == 0:
+                #             pred_q_t = 1
+                #         else:
+                #             pred_q_t = repl.pred_queue_time[-1]
+                #         if self.src_replica.cluster_id == repl.cluster_id:
+                #             pred_latency = pred_q_t + self.dst_service.processing_time + network_latency.same_rack
+                #         else:
+                #             pred_latency = pred_q_t + self.dst_service.processing_time + network_latency.far_inter_region
+                #         inverse_latency.append([repl, pred_latency, 1/pred_latency])
+                # sum_of_inverse = sum(x[2] for x in inverse_latency)
+                # for i in range(len(inverse_latency)):
+                #     w_ = inverse_latency[i][2]/sum_of_inverse
+                #     inverse_latency[i].append(w_)
+                # dst_replica_candidates = random.choices([x[0] for x in inverse_latency], weights=[x[3] for x in inverse_latency], k=1)
+                
+                
+                ## 3. no cross-cluster routing. local routing only with queueing based routing 
+                dst_replica_candidates = local_replica
                 inverse_latency = list()
                 for repl in dst_replica_candidates:
                     if repl.is_dead == False:
@@ -2365,17 +2384,28 @@ class LoadBalancing(Event):
                             pred_q_t = 1
                         else:
                             pred_q_t = repl.pred_queue_time[-1]
-                        if self.src_replica.cluster_id == repl.cluster_id:
-                            pred_latency = pred_q_t + self.dst_service.processing_time + network_latency.same_rack
-                        else:
-                            pred_latency = pred_q_t + self.dst_service.processing_time + network_latency.far_inter_region
-                        inverse_latency.append([repl, pred_latency, 1/pred_latency])
-                sum_of_inverse = sum(x[2] for x in inverse_latency)
-                for i in range(len(inverse_latency)):
-                    w_ = inverse_latency[i][2]/sum_of_inverse
-                    inverse_latency[i].append(w_)
-                dst_replica_candidates = random.choices([x[0] for x in inverse_latency], weights=[x[3] for x in inverse_latency], k=1)
-                # #################################################################################
+                        pred_latency = pred_q_t + self.dst_service.processing_time + network_latency.same_rack
+                        inverse_latency.append([repl, pred_latency, 1/pred_latency, pred_q_t, repl.cur_ewma_intarrtime])
+                inverse_latency.sort(key=lambda x: x[1])
+                # for elem in inverse_latency:
+                #     print("{}, {}, {}, {}, {}".format(elem[0].to_str(), elem[1], elem[2], elem[3], elem[4]))
+                # print("---")
+                # Top 5 local instances by queueing time.
+                num_can = 5
+                if len(inverse_latency) >= num_can:
+                    inverse_latency = inverse_latency[:num_can]
+                    dst_replica_candidates = [x[0] for x in inverse_latency]
+                else:
+                    dst_replica_candidates = [x[0] for x in inverse_latency]
+                # for elem in dst_replica_candidates:
+                #     print("{}".format(elem.to_str()))
+                # print()
+                
+                # sum_of_inverse = sum(x[2] for x in inverse_latency)
+                # for i in range(len(inverse_latency)):
+                #     w_ = inverse_latency[i][2]/sum_of_inverse
+                #     inverse_latency[i].append(w_)
+                # dst_replica_candidates = random.choices([x[0] for x in inverse_latency], weights=[x[3] for x in inverse_latency], k=1)
             else:
                 dst_replica_candidates = self.heuristic_TE(self.src_replica.cluster_id, other_cluster, self.dst_service, local_replica, remote_replica, self.scheduled_time)
                 
@@ -2409,27 +2439,23 @@ class LoadBalancing(Event):
             #   - local replica, queue size 4: (1*2) + (4*100) + 100 = 512
             #   - remote replica, queue size 3: (40*2) + (3*100) + 100 = 480
             #   In this case, the request will be routed to the remote replica.
-            
             superset_candidates = placement.all_svc_to_repl[self.dst_service]
             moment_latency_list = list()
             for i in range(len(superset_candidates)):
                 mmt_latency = self.src_replica.calc_moment_latency(superset_candidates[i])
                 moment_latency_list.append([mmt_latency, i, superset_candidates[i]])
             moment_latency_list.sort(key=lambda x:x[0])
-            for elem in moment_latency_list:
-                if LOG_MACRO: utils.print_log("WARNING", "moment_latency, from {} to {}, est_latency: {}, idx: {}".format(self.src_replica.to_str(), elem[2].to_str(), elem[0], elem[1]))
-            
-            sorted_replica_list = list()
-            for elem in moment_latency_list:
-                sorted_replica_list.append(elem[2])
-            superset_candidates = sorted_replica_list
-            
+            if LOG_MACRO:
+                for elem in moment_latency_list:
+                    utils.print_log("WARNING", "moment_latency, from {} to {}, est_latency: {}, idx: {}".format(self.src_replica.to_str(), elem[2].to_str(), elem[0], elem[1]))
+            sorted_replica_list = [x[2] for x in moment_latency_list]
             dst_replica_candidates = list()
-            for repl in superset_candidates:
+            for repl in sorted_replica_list:
                 if repl.is_dead == False:
                     dst_replica_candidates.append(repl)
-                else:
-                    if LOG_MACRO: utils.print_log("INFO", "(LB), Replica "+repl.to_str()+" was dead. It will be excluded from lb dst candidate.")
+            num_can = 10
+            if  len(dst_replica_candidates) > num_can:
+                dst_replica_candidates = dst_replica_candidates[:num_can]
                     
         elif CONFIG["ROUTING_ALGORITHM"] == "MCLB": # multi-cluster load balancing
             # ################################################################
@@ -3513,9 +3539,9 @@ if __name__ == "__main__":
     if CONFIG["ROUTING_ALGORITHM"] == "queueing_prediction":
         for svc in dag.all_service:
             if svc.name.find("User") == -1:
-                simulator.load_queueing_function("postprocessed_queuing_function-"+svc.name+".txt", svc)
+                # simulator.load_queueing_function("postprocessed_queuing_function-"+svc.name+".txt", svc)
                 # simulator.load_queueing_function("moving_avg_inter_arrival_time_10_queuing_function-"+svc.name+".txt", svc)
-                # simulator.load_queueing_function("ewma_inter_arrival_time_queuing_function-"+svc.name+".txt", svc)
+                simulator.load_queueing_function("ewma_inter_arrival_time_queuing_function-"+svc.name+".txt", svc)
             
     simulator.start_simulation()
     simulator.print_summary()
