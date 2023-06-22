@@ -973,6 +973,7 @@ class Service:
 class Replica:
     # def __init__(self, service_, id_, node_):
     def __init__(self, service, id):
+        self.ewma_rt = dict()
         self.cur_ewma_intarrtime = 0
         self.most_recent_arrival_time = 0
         self.arr_time_window_size = 20
@@ -1011,6 +1012,7 @@ class Replica:
         self.is_warm = False
         self.num_recv_request = 0
         self.num_pending_request = 0 # It decrements when it receives the sendback request from the downstream.
+        self.num_completed_request = 0
         
         self.processing_queue_size = 0 # Actual queue size. It doesn't count the request that is being processed.
         
@@ -1659,6 +1661,17 @@ class Simulator:
         temp_list.append("start_time : " + str(self.cur_time)+"\n")
         temp_list.append("runtime : " + str(time.time() - self.sim_start_timestamp)+"\n")
         meta_file.writelines(temp_list)
+        
+        if 0 in CONFIG["CROSS_CLUSTER_ROUTING"]:
+            meta_file.write("CROSS CLUSTER {} : {}".format(0, CONFIG["CROSS_CLUSTER_ROUTING"][0]))
+        if 1 in CONFIG["CROSS_CLUSTER_ROUTING"]:
+            meta_file.write("CROSS CLUSTER {} : {}".format(1, CONFIG["CROSS_CLUSTER_ROUTING"][1]))
+        if 0 in CONFIG["CROSS_CLUSTER_ROUTING"] and 1 in CONFIG["CROSS_CLUSTER_ROUTING"]:
+            meta_file.write("TOTAL_CROSS_CLUSTER_ROUTING: {}".format(CONFIG["CROSS_CLUSTER_ROUTING"][0] + CONFIG["CROSS_CLUSTER_ROUTING"][1]))
+        for key, value in CONFIG["CROSS_CLUSTER_ROUTING"].items():
+            if key != 0 and key != 1:
+                meta_file.write("CROSS CLUSTER {} : {}".format(key, value))
+    
         meta_file.close()
             
     def write_simulation_latency_result(self):
@@ -2477,9 +2490,10 @@ class LoadBalancing(Event):
             superset_candidates = placement.all_svc_to_repl[self.dst_service]
             
             ## DEBUG PRINT
-            if LOG_MACRO: utils.print_log("INFO", "(LB) Dst superset:")
-            for repl in superset_candidates:
-                if LOG_MACRO: utils.print_log("INFO", repl.to_str())
+            if LOG_MACRO: 
+                utils.print_log("INFO", "(LB) Dst superset:")
+                for repl in superset_candidates:
+                    utils.print_log("INFO", repl.to_str())
             
             dst_replica_candidates = list()
             for repl in superset_candidates:
@@ -2523,8 +2537,8 @@ class LoadBalancing(Event):
             dst_replica = self.least_outstanding_request(dst_replica_candidates)
         elif self.policy == "MovingAvg":
             dst_replica = self.moving_average(dst_replica_candidates)
-        elif self.policy == "EWMA":
-            dst_replica = self.ewma(dst_replica_candidates)
+        elif self.policy == "EWMA_ResponseTime":
+            dst_replica = self.ewma_response_time(dst_replica_candidates)
         else:
             utils.error_handling(self.policy + " load balancing policy is not supported.")
 
@@ -2598,29 +2612,28 @@ class LoadBalancing(Event):
         return least_request_repl
         
 
-    def ewma(self, replicas):
+    def ewma_response_time(self, replicas):
+        if self.src_replica.is_warm == False:
+            return self.roundrobin(replicas)
+        new_repl = list()
+        ordered_repl_list = list()
         for repl in replicas:
-            if repl.is_warm == False:
-                return self.least_outstanding_request(replicas)
-        def get_avg_2(li):
-            if len(li) == 0:
-                return 0
-            return sum(li)/len(li)
-        ret = replicas[0]
-        avg_0 = get_avg_2(self.src_replica.response_time[repl])
-        # outstanding_0 = len(self.src_replica.outstanding_response[replicas[0]])
-        outstanding_0 = self.src_replica.num_outstanding_response_from_child[replicas[0]]
-        min_wma = avg_0 * outstanding_0
-        if LOG_MACRO: utils.print_log("DEBUG", "EWMA, "+ self.src_replica.to_str())
-        for repl in replicas:
-            avg = get_avg_2(self.src_replica.response_time[repl])
-            # wma = avg * len(self.src_replica.outstanding_response[repl])
-            wma = avg * self.src_replica.num_outstanding_response_from_child[repl]
-            if LOG_MACRO: utils.print_log("DEBUG", "\t" + repl.to_str() + ": moving avg rt," + str(avg) + ",num_outstanding." + str(self.src_replica.num_outstanding_response_from_child[repl]) + ",wma,"+str(wma))
-            if min_wma > wma:
-                min_wma = wma
-                ret = repl
-        return ret        
+            if repl.is_dead == False:
+                if repl in self.src_replica.ewma_rt:
+                    outstanding = self.src_replica.num_outstanding_response_from_child[repl]
+                    ewma_rt = self.src_replica.ewma_rt[repl]
+                    ordered_repl_list.append([repl, ewma_rt, outstanding])
+                else:
+                    new_repl.append(repl)
+        ordered_repl_list.sort(key=lambda x: x[1])
+        for repl in ordered_repl_list:
+            print("{}->{}, ewma_rt: {}".format(self.src_replica.to_str(), repl[0].to_str(), repl[1]))
+        print()
+        ordered_repl_list = [x[0] for x in ordered_repl_list]
+        ordered_repl_list = ordered_repl_list[:3]
+        ordered_repl_list += new_repl
+        random_pick = self.random(ordered_repl_list)
+        return random_pick
 
         
     def moving_average(self, replicas):
@@ -2629,33 +2642,31 @@ class LoadBalancing(Event):
                 return -1
             return sum(li)/len(li)
         
-        if LOG_MACRO: utils.print_log("DEBUG", self.src_replica.to_str() + " response_time: ")
-        for repl in replicas:
-            avg = get_avg(self.src_replica.response_time[repl])
-            if LOG_MACRO: utils.print_log("DEBUG", "\t" + repl.to_str() + ": ", end="")
-        if LOG_MACRO: utils.print_log("DEBUG", "")
-        for repl in replicas:
-            if repl.is_warm == False:
-                return self.least_outstanding_request(replicas)
+        # if LOG_MACRO: utils.print_log("DEBUG", self.src_replica.to_str() + " response_time: ")
+        # for repl in replicas:
+        #     avg = get_avg(self.src_replica.response_time[repl])
+        #     if LOG_MACRO: utils.print_log("DEBUG", "\t" + repl.to_str() + ": ", end="")
+        # if LOG_MACRO: utils.print_log("DEBUG", "")
+        # for repl in replicas:
+        #     if repl.is_warm == False:
+        #         return self.least_outstanding_request(replicas)
         
         least_repl = replicas[0]
         least_avg = get_avg(self.src_replica.response_time[replicas[0]])
-        # if least_avg == -1:
-        #     return replicas[0]
         for repl in replicas:
             avg = get_avg(self.src_replica.response_time[repl])
             if avg == -1:
-                # utils.error_handling(repl.to_str() + " has no response time.")
                 return self.least_outstanding_request(replicas)
             if least_avg > avg:
                 least_repl = repl
                 least_avg = avg
-        if LOG_MACRO: utils.print_log("DEBUG", "moving_average(" + str(least_avg) + "): " + self.src_replica.to_str() + "->" + least_repl.to_str())
-        for repl in replicas:
-            if LOG_MACRO: utils.print_log("DEBUG", "\t" + repl.to_str() + ": ", end="")
-            for rt in self.src_replica.response_time[repl]:
-                if LOG_MACRO: utils.print_log("DEBUG", rt, end=", ")
-            if LOG_MACRO: utils.print_log("DEBUG", "")
+        if LOG_MACRO: 
+            utils.print_log("DEBUG", "moving_average(" + str(least_avg) + "): " + self.src_replica.to_str() + "->" + least_repl.to_str())
+            for repl in replicas:
+                utils.print_log("DEBUG", "\t" + repl.to_str() + ": ", end="")
+                for rt in self.src_replica.response_time[repl]:
+                    utils.print_log("DEBUG", rt, end=", ")
+                utils.print_log("DEBUG", "")
         return least_repl
 
         
@@ -2710,10 +2721,12 @@ class SendRequest(Event):
         e_latency = self.event_latency()
         assert self.src_replica.num_outstanding_response_from_child[self.dst_replica] >= 0
         self.src_replica.num_outstanding_response_from_child[self.dst_replica] += 1
-        if self.request in self.src_replica.sending_time[self.dst_replica]:
-            utils.error_handling("request[" + str(self.request.id) + "] already exists in " + self.src_replica.to_str() + " sending_time.\nDiamond shape call graph is not supported yet.")
-        assert self.request.id not in self.src_replica.sending_time[self.dst_replica]
-        self.src_replica.sending_time[self.dst_replica][self.request.id] = self.scheduled_time
+        if simulator.arg_flags.load_balancer == "MovingAvg" or simulator.arg_flags.load_balancer == "EWMA_ResponseTime":
+            if self.request in self.src_replica.sending_time[self.dst_replica]:
+                utils.error_handling("request[" + str(self.request.id) + "] already exists in " + self.src_replica.to_str() + " sending_time.\nDiamond shape call graph is not supported yet.")
+            assert self.request.id not in self.src_replica.sending_time[self.dst_replica]
+            self.src_replica.sending_time[self.dst_replica][self.request.id] = self.scheduled_time
+        
         # output_log[self.request.id].append(self.schd_time_)
         if LOG_MACRO: utils.print_log("INFO", "Execute: SendRequest(request[" + str(self.request.id) + "]), " + self.src_replica.to_str() + "=>" + self.dst_replica.to_str() + " during " + str(int(self.scheduled_time)) + "-" + str(int(self.scheduled_time + e_latency)))
         queuing_event = RecvRequest(self.scheduled_time + e_latency, self.request, self.src_replica, self.dst_replica)
@@ -2770,15 +2783,16 @@ class RecvRequest(Event):
             self.dst_replica.queueing_start_time[self.request] = self.scheduled_time
         ##########################################################
         
+        ## Comment out to reduce memory consumption
         ### Record start timestamp for this service
-        if self.dst_replica.cluster_id == 0:
-            ####################################################################
-            ## It will be asserted if there this replica(service) has two parents.
-            ## For example, A->C, B->C
-            assert self.request not in simulator.cluster0_service_latency[self.dst_replica.service]
-            simulator.cluster0_service_latency[self.dst_replica.service][self.request] = self.scheduled_time 
-        elif self.dst_replica.cluster_id == 1:
-            simulator.cluster1_service_latency[self.dst_replica.service][self.request] = self.scheduled_time
+        # if self.dst_replica.cluster_id == 0:
+        #     ####################################################################
+        #     ## It will be asserted if there this replica(service) has two parents.
+        #     ## For example, A->C, B->C
+        #     assert self.request not in simulator.cluster0_service_latency[self.dst_replica.service]
+        #     simulator.cluster0_service_latency[self.dst_replica.service][self.request] = self.scheduled_time 
+        # elif self.dst_replica.cluster_id == 1:
+        #     simulator.cluster1_service_latency[self.dst_replica.service][self.request] = self.scheduled_time
 
         # if self.dst_replica.get_status() != "Active":
         #     prev_status = self.dst_replica.get_status()
@@ -2786,10 +2800,6 @@ class RecvRequest(Event):
         #     if LOG_MACRO: utils.print_log("INFO", "(RecvRequest) Replica {} changed the status {}->{}".format(self.dst_replica.to_str(), prev_status, self.dst_replica.get_status()))
         
         self.dst_replica.num_recv_request += 1
-        if self.dst_replica.is_warm == False:
-            if self.dst_replica.num_recv_request >= CONFIG["WARMUP_SIZE"]:
-                self.dst_replica.is_warm = True
-                if LOG_MACRO: utils.print_log("DEBUG", "WARMED UP! " + self.dst_replica.to_str())
         #######################################################################
         
         
@@ -3036,14 +3046,15 @@ class SendBackRequest(Event):
         e_latency = self.event_latency()
         if LOG_MACRO: utils.print_log("INFO", "Execute: SendBackRequest(request[" + str(self.request.id) + "]), " + self.src_replica.to_str() + " -> " + self.dst_replica.to_str() + " during " + str(int(self.scheduled_time)) + "-" + str(int(self.scheduled_time + e_latency)))
         
-        if self.src_replica.cluster_id == 0:
-            assert self.request in simulator.cluster0_service_latency[self.src_replica.service]
-            start_time = simulator.cluster0_service_latency[self.src_replica.service][self.request]
-            simulator.cluster0_service_latency[self.src_replica.service][self.request] = self.scheduled_time - start_time
-        elif self.src_replica.cluster_id == 1:
-            assert self.request in simulator.cluster1_service_latency[self.src_replica.service]
-            start_time = simulator.cluster1_service_latency[self.src_replica.service][self.request]
-            simulator.cluster1_service_latency[self.src_replica.service][self.request] = self.scheduled_time - start_time
+        ## Comment out to reduce memory consumption
+        # if self.src_replica.cluster_id == 0:
+        #     assert self.request in simulator.cluster0_service_latency[self.src_replica.service]
+        #     start_time = simulator.cluster0_service_latency[self.src_replica.service][self.request]
+        #     simulator.cluster0_service_latency[self.src_replica.service][self.request] = self.scheduled_time - start_time
+        # elif self.src_replica.cluster_id == 1:
+        #     assert self.request in simulator.cluster1_service_latency[self.src_replica.service]
+        #     start_time = simulator.cluster1_service_latency[self.src_replica.service][self.request]
+        #     simulator.cluster1_service_latency[self.src_replica.service][self.request] = self.scheduled_time - start_time
         
         
         ######################################################
@@ -3094,13 +3105,32 @@ class RecvSendBack(Event):
         e_latency = self.event_latency()
         assert e_latency == 0
         if LOG_MACRO: utils.print_log("INFO", "Execute: RecvSendBack(request[" + str(self.request.id) + "])" + self.dst_replica.to_str() + " from " + self.src_replica.to_str() + " during " + str(int(self.scheduled_time)) + "-" + str(int(self.scheduled_time + e_latency)))
-        if self.src_replica not in self.dst_replica.sending_time:
-            utils.error_handling("(RecvSendBack) {}(child replica) does not exist in {}(parent replica)'s sending_time data structure.".format(self.src_replica.to_str(), self.dst_replica.to_str()))
-        sending_st = self.dst_replica.sending_time[self.src_replica][self.request.id]
-        del self.dst_replica.sending_time[self.src_replica][self.request.id]
-        self.dst_replica.response_time[self.src_replica].append(self.scheduled_time + e_latency - sending_st)
-        if len(self.dst_replica.response_time[self.src_replica]) > CONFIG["MA_WINDOW_SIZE"]:
-            self.dst_replica.response_time[self.src_replica].pop(0)
+        
+        self.dst_replica.num_completed_request += 1
+        ##############################################################
+        if self.dst_replica.is_warm == False and self.dst_replica.num_completed_request >= CONFIG["WARMUP_SIZE"]:
+            self.dst_replica.is_warm = True
+            if LOG_MACRO: utils.print_log("DEBUG", "WARMED UP! " + self.dst_replica.to_str())
+        ##########################################################33##
+        
+        if simulator.arg_flags.load_balancer == "MovingAvg" or simulator.arg_flags.load_balancer == "EWMA_ResponseTime":
+            if self.src_replica not in self.dst_replica.sending_time:
+                utils.error_handling("(RecvSendBack) {}(child replica) does not exist in {}(parent replica)'s sending_time data structure.".format(self.src_replica.to_str(), self.dst_replica.to_str()))
+            sending_ts = self.dst_replica.sending_time[self.src_replica][self.request.id]
+            del self.dst_replica.sending_time[self.src_replica][self.request.id]
+            # self.dst_replica.response_time[self.src_replica].append(self.scheduled_time + e_latency - sending_ts)
+            # if len(self.dst_replica.response_time[self.src_replica]) > CONFIG["MA_WINDOW_SIZE"]:
+                # self.dst_replica.response_time[self.src_replica].pop(0)
+                
+            cur_rt = self.scheduled_time + e_latency - sending_ts
+            if self.src_replica not in self.dst_replica.ewma_rt:
+                prev_ewma = 0
+                # print("the very first response from {} to {}".format(self.src_replica.to_str(), self.dst_replica.to_str()))
+            else:
+                prev_ewma = self.dst_replica.ewma_rt[self.src_replica]
+            new_ewma = simulator.calc_ewma(cur_rt, prev_ewma, 0.7)
+            self.dst_replica.ewma_rt[self.src_replica] = new_ewma
+            
         assert self.src_replica in self.dst_replica.num_outstanding_response_from_child
         self.dst_replica.num_outstanding_response_from_child[self.src_replica] -= 1
         self.src_replica.num_pending_request -= 1 ### BUG fixed
@@ -3308,7 +3338,7 @@ def three_depth_application(load_balancer, c0_req_arr, c1_req_arr):
 def argparse_add_argument(parser):
     parser.add_argument("--app", type=str, default=None, help="the name of the target app", choices=["one_service", "three_depth"], required=True)
     
-    parser.add_argument("--load_balancer", type=str, default=None, help="load balancing policy", choices=["Random", "RoundRobin", "LeastRequest", "MovingAvg", "EWMA"], required=True)
+    parser.add_argument("--load_balancer", type=str, default=None, help="load balancing policy", choices=["Random", "RoundRobin", "LeastRequest", "MovingAvg", "EWMA_ResponseTime"], required=True)
     
     parser.add_argument("--routing_algorithm", type=str, default=None, choices=["LCLB", "MCLB", "heuristic_TE", "moment_response_time", "capacity_TE", "queueing_prediction"], help="routing algorithm when multi-cluster is enabled.", required=True)
     
@@ -3545,9 +3575,9 @@ if __name__ == "__main__":
             
     simulator.start_simulation()
     simulator.print_summary()
-    simulator.write_metadata_file()
     simulator.write_resource_provisioning()
     simulator.write_simulation_latency_result()
+    simulator.write_metadata_file()
     if simulator.arg_flags.routing_algorithm == "LCLB":
         simulator.write_req_arr_time()
     # simulator.write_interarr_to_queuing_list()
