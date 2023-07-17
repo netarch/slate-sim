@@ -12,6 +12,8 @@ from queue import Queue
 import random
 import time
 import logging
+import sys
+sys.path.append("utils")
 from utils import utils
 import logging
 # from memory_profiler import profile
@@ -154,8 +156,8 @@ class DAG:
                     superset_child_replica = placement.all_svc_to_repl[child_svc]
                     ################################################
                     for child_repl in superset_child_replica:
-                        if LOG_MACRO: utils.print_log("WARNING", "{}'s {} childe: {}".format(repl.to_str(), child_svc.name, child_repl.to_str()))
                         self.child_replica[repl][child_svc].append(child_repl)
+                        if LOG_MACRO: utils.print_log("WARNING", "{}'s {} childe: {}".format(repl.to_str(), child_svc.name, child_repl.to_str()))
                             
     def deregister_replica(self, target_repl):
         if target_repl in self.child_replica:
@@ -272,10 +274,10 @@ class DAG:
         return service_ not in self.graph
         
     def print_dependency(self):
-        if LOG_MACRO: utils.print_log("DEBUG", "="*10 + " DAG " + "="*10)
+        print("="*10 + " DAG " + "="*10)
         for key in self.graph:
             for elem in self.graph[key]:
-                if LOG_MACRO: utils.print_log("DEBUG", key.name + "->" + elem["service"].name + ", " + str(elem["weight"]))
+                print(key.name + "->" + elem["service"].name + ", " + str(elem["weight"]))
         
         # for p_c_pair, lb in self.lb_dictionary.items():
         #     if LOG_MACRO: utils.print_log("DEBUG", p_c_pair + ": " + lb)
@@ -1085,9 +1087,11 @@ class Replica:
             
     def calc_moment_latency(self, src_repl):
         if self.cluster_id == src_repl.cluster_id:
-            network_lat = network_latency.same_rack
+            # NOTE: hardcoded. 
+            # multiplied by 2 to reflect both send and receive network latency
+            network_lat = network_latency.same_rack*2 
         else:
-            network_lat = network_latency.far_inter_region # hardcoded
+            network_lat = network_latency.far_inter_region*2
         queuing = self.processing_queue_size * self.service.processing_time
         processing_t = self.service.processing_time
         
@@ -2324,9 +2328,9 @@ class LoadBalancing(Event):
                 #         else:
                 #             pred_q_t = repl.pred_queue_time[-1]
                 #         if self.src_replica.cluster_id == repl.cluster_id:
-                #             pred_latency = pred_q_t + self.dst_service.processing_time + network_latency.same_rack
+                #             pred_latency = pred_q_t + self.dst_service.processing_time + network_latency.same_rack*2
                 #         else:
-                #             pred_latency = pred_q_t + self.dst_service.processing_time + network_latency.far_inter_region
+                #             pred_latency = pred_q_t + self.dst_service.processing_time + network_latency.far_inter_region*2
                 #         inverse_latency.append([repl, pred_latency, 1/pred_latency])
                 # sum_of_inverse = sum(x[2] for x in inverse_latency)
                 # for i in range(len(inverse_latency)):
@@ -2361,10 +2365,10 @@ class LoadBalancing(Event):
                 # remote_cluster_queueing_metric = self.dst_service.cluster_agg_queue_time(agg_metric, other_cluster)
                 # local_agg_pred_latency = local_cluster_queueing_metric \
                 #                         + self.dst_service.processing_time \
-                #                         + network_latency.same_rack ## NOTE: network latency is hardcoded
+                #                         + network_latency.same_rack*2 ## NOTE: network latency is hardcoded
                 # remote_agg_pred_latency = remote_cluster_queueing_metric \
                 #                         + self.dst_service.processing_time \
-                #                         + network_latency.far_inter_region ## NOTE: network latency is hardcoded
+                #                         + network_latency.far_inter_region*2 ## NOTE: network latency is hardcoded
                 # if local_agg_pred_latency < remote_agg_pred_latency:
                 #     dst_replica_candidates = local_replica
                 # else:
@@ -2377,9 +2381,9 @@ class LoadBalancing(Event):
                 #         else:
                 #             pred_q_t = repl.pred_queue_time[-1]
                 #         if self.src_replica.cluster_id == repl.cluster_id:
-                #             pred_latency = pred_q_t + self.dst_service.processing_time + network_latency.same_rack
+                #             pred_latency = pred_q_t + self.dst_service.processing_time + network_latency.same_rack*2
                 #         else:
-                #             pred_latency = pred_q_t + self.dst_service.processing_time + network_latency.far_inter_region
+                #             pred_latency = pred_q_t + self.dst_service.processing_time + network_latency.far_inter_region*2
                 #         inverse_latency.append([repl, pred_latency, 1/pred_latency])
                 # sum_of_inverse = sum(x[2] for x in inverse_latency)
                 # for i in range(len(inverse_latency)):
@@ -2397,7 +2401,7 @@ class LoadBalancing(Event):
                             pred_q_t = 1
                         else:
                             pred_q_t = repl.pred_queue_time[-1]
-                        pred_latency = pred_q_t + self.dst_service.processing_time + network_latency.same_rack
+                        pred_latency = pred_q_t + self.dst_service.processing_time + network_latency.same_rack*2
                         inverse_latency.append([repl, pred_latency, 1/pred_latency, pred_q_t, repl.cur_ewma_intarrtime])
                 inverse_latency.sort(key=lambda x: x[1])
                 # for elem in inverse_latency:
@@ -2671,7 +2675,7 @@ class LoadBalancing(Event):
 
         
 class NetworkLatency:
-    def __init__(self, same_rack, inter_rack, inter_zone, close_inter_region, far_inter_region):
+    def __init__(self, same_rack=0.5, inter_rack=1.0, inter_zone=5.0, close_inter_region=15.0, far_inter_region=30.0):
         self.same_rack = same_rack
         self.inter_rack = inter_rack
         self.inter_zone = inter_zone
@@ -2679,7 +2683,24 @@ class NetworkLatency:
         self.far_inter_region = far_inter_region
         self.std = 5
         
-    def calc_latency(self, src_replica_, dst_replica_):
+    def get_latency(self, src_replica_, dst_replica_):
+        # Inter region (east-west)
+        if src_replica_.node.region_id != dst_replica_.node.region_id:
+            return self.far_inter_region
+        # Inter region (east-east, west-west)
+        elif src_replica_.node.zone_id != dst_replica_.node.zone_id:
+            return self.close_inter_region
+        # Inter zone
+        elif src_replica_.node.rack_id != dst_replica_.node.rack_id:
+            return self.inter_zone
+        # Inter rack
+        elif src_replica_.node.rack_id == dst_replica_.node.rack_id and src_replica_.node.node_id != dst_replica_.node.node_id:
+            return self.inter_rack
+        # Within the same rack
+        else:
+            return self.same_rack
+        
+    def sample_latency(self, src_replica_, dst_replica_):
         def normal_dist(mean, std):
             sample = np.random.normal(mean, std, 1)
             return sample[0]
@@ -2715,7 +2736,7 @@ class SendRequest(Event):
         self.name = "SendRequest"
 
     def event_latency(self):
-        return network_latency.calc_latency(self.src_replica, self.dst_replica)
+        return network_latency.sample_latency(self.src_replica, self.dst_replica)
 
     def execute_event(self):
         e_latency = self.event_latency()
@@ -3040,7 +3061,7 @@ class SendBackRequest(Event):
         self.name = "SendBackRequest"
         
     def event_latency(self):
-        return network_latency.calc_latency(self.src_replica, self.dst_replica)
+        return network_latency.sample_latency(self.src_replica, self.dst_replica)
         
     def execute_event(self):
         e_latency = self.event_latency()
@@ -3221,8 +3242,11 @@ class CompleteRequest(Event):
 ######################### It is the end of event classes ##############################
 #######################################################################################
 
+def test4(a=0):
+    print("test2")
+    
 
-def three_depth_application(load_balancer, c0_req_arr, c1_req_arr):
+def three_depth_application(load_balancer="RoundRobin", c0_req_arr=list(), c1_req_arr=list()):
     user = Service(name_="User", mcore_per_req_=0, processing_t_=0, lb_=load_balancer)
     # user_1 = Service(name_="User1", mcore_per_req_=0, processing_t_=0, lb_=load_balancer)
     core_per_request = 1000
@@ -3259,8 +3283,20 @@ def three_depth_application(load_balancer, c0_req_arr, c1_req_arr):
     num_replica_for_cluster_0 = dict()
     num_replica_for_cluster_1 = dict()
     for svc in service_map:
-        num_replica_for_cluster_0[svc] = calc_initial_num_replica(c0_req_arr, service_map[svc])
-        num_replica_for_cluster_1[svc] = calc_initial_num_replica(c1_req_arr, service_map[svc])
+        if len(c0_req_arr) != 0:
+            num_replica_for_cluster_0[svc] = calc_initial_num_replica(c0_req_arr, service_map[svc])
+        else:
+            if svc == "User":
+                num_replica_for_cluster_0[svc] = 1 # NOTE: hardcoded
+            else:
+                num_replica_for_cluster_0[svc] = 2 # NOTE: hardcoded
+        if len(c1_req_arr) != 0:
+            num_replica_for_cluster_1[svc] = calc_initial_num_replica(c1_req_arr, service_map[svc])
+        else:
+            if svc == "User":
+                num_replica_for_cluster_1[svc] = 1 # NOTE: hardcoded
+            else:
+                num_replica_for_cluster_1[svc] = 2 # NOTE: hardcoded
     print("- num_replica_for_cluster_0")
     for svc in num_replica_for_cluster_0:
         print("\t- {}: {}".format(svc, num_replica_for_cluster_0[svc]))
@@ -3360,11 +3396,11 @@ def argparse_add_argument(parser):
     
     parser.add_argument("--response_time_window_size", type=int, default=200, help="window size of response time for moving average and ewma", required=False)
     
-    parser.add_argument("--same_rack_network_latency", type=float, default=0, help="same_rack_network_latency cluster", required=False)
+    parser.add_argument("--same_rack_network_latency", type=float, default=0.5, help="same_rack_network_latency cluster", required=False)
     
-    parser.add_argument("--inter_rack_network_latency", type=float, default=0.5, help="inter_rack_network_latency cluster", required=False)
+    parser.add_argument("--inter_rack_network_latency", type=float, default=1, help="inter_rack_network_latency cluster", required=False)
     
-    parser.add_argument("--inter_zone_network_latency", type=float, default=2, help="inter_zone_network_latency cluster", required=False)
+    parser.add_argument("--inter_zone_network_latency", type=float, default=5, help="inter_zone_network_latency cluster", required=False)
     
     parser.add_argument("--close_inter_region_network_latency", type=float, default=15, help="close_inter_region_network_latency cluster", required=False)
     
