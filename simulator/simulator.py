@@ -94,8 +94,11 @@ E.g.,
 '''
 class DAG:
     def __init__(self):
-        self.graph = dict()
+        self.graph = dict() # key: parent service, value: list of child services and weights
+        self.graph_with_service_name = dict() # key: parent service name, value: list of child service names and weights
         self.reverse_graph = dict()
+        self.reverse_graph_with_service_name = dict() # key: parent service name, value: child service name and weight
+        self.weight_graph = dict() # it is nested map. will be initialized in add_dependency function. outer map key: source service name, inner map key: child service name, inner map value: weight. e.g., {weight_graph["A"]["B"]: 10}
         self.child_replica = dict() # Multi-cluster aware variable
         self.all_replica = list()
         self.all_service = list()
@@ -120,10 +123,20 @@ class DAG:
         if parent_service not in self.graph:
             self.graph[parent_service] = list()
         self.graph[parent_service].append(dict({"service": child_service, "weight": weight}))
-        
         if child_service not in self.reverse_graph:
             self.reverse_graph[child_service] = list()
         self.reverse_graph[child_service].append(dict({'service': parent_service, 'weight': weight}))
+        # Same as the above but service name as the key in dictionary not service instance
+        if parent_service.name not in self.graph_with_service_name:
+            self.graph_with_service_name[parent_service.name] = list()
+        self.graph_with_service_name[parent_service.name].append(dict({"service": child_service.name, "weight": weight}))
+        if child_service.name not in self.reverse_graph_with_service_name:
+            self.reverse_graph_with_service_name[child_service.name] = list()
+        self.reverse_graph_with_service_name[child_service.name].append(dict({'service': parent_service.name, 'weight': weight}))
+        # easy-to-use purpose
+        if parent_service.name not in self.weight_graph:
+            self.weight_graph[parent_service.name] = dict()
+        self.weight_graph[parent_service.name][child_service.name] = weight
         
         
     def register_replica(self, repl):
@@ -212,7 +225,6 @@ class DAG:
             return p_replica
         else:
             return placement.all_svc_to_repl[parent_svc]
-            
 
 
     def get_parent_services(self, svc):
@@ -221,18 +233,15 @@ class DAG:
             if svc.name.find("User") == -1:
                 utils.error_handling(svc.name + "(non-User service) must have at least one parent service.")
             return None
-        
         parent_services = list()
         li = self.reverse_graph[svc]
         for elem in li:
             parent_services.append(elem['service'])
-            
         if LOG_MACRO:
             utils.print_log("DEBUG", svc.name + "'s parent services: ", end="")
             for parent_svc in parent_services:
                 utils.print_log("DEBUG", parent_svc.name + ", ", end="")
             utils.print_log("DEBUG", "")
-        
         return parent_services
     
     
@@ -278,10 +287,7 @@ class DAG:
         for key in self.graph:
             for elem in self.graph[key]:
                 print(key.name + "->" + elem["service"].name + ", " + str(elem["weight"]))
-        
-        # for p_c_pair, lb in self.lb_dictionary.items():
-        #     if LOG_MACRO: utils.print_log("DEBUG", p_c_pair + ": " + lb)
-        if LOG_MACRO: utils.print_log("DEBUG", "="*25)
+
         
     ''' Plot graph using Graphviz '''
     def plot_graphviz(self):
@@ -3244,8 +3250,101 @@ class CompleteRequest(Event):
 
 def test4(a=0):
     print("test2")
-    
 
+# User->A->B->C
+def linear_topology_application(load_balancer="RoundRobin", c0_req_arr=list(), c1_req_arr=list()):
+    user = Service(name_="User", mcore_per_req_=0, processing_t_=0, lb_=load_balancer)
+    # user_1 = Service(name_="User1", mcore_per_req_=0, processing_t_=0, lb_=load_balancer)
+    core_per_request = 1000
+    svc_a = Service(name_="A", mcore_per_req_=core_per_request, processing_t_=20, lb_=load_balancer) # Frontend
+    svc_b = Service(name_="B", mcore_per_req_=core_per_request, processing_t_=30, lb_=load_balancer) # Calculation
+    svc_c = Service(name_="C", mcore_per_req_=core_per_request, processing_t_=5, lb_=load_balancer) # DB
+    # Currently it is assumed that cluster 0 and cluster 1 have the same application topology
+    service_map = {"User":user, "A":svc_a, "B":svc_b, "C":svc_c}
+    
+    dag.add_service(user)
+    dag.add_service(svc_a)
+    dag.add_service(svc_b)
+    dag.add_service(svc_c)
+    
+    # DAG
+    # Heavy data transfer in the tail.
+    dag.add_dependency(parent_service=user, child_service=svc_a, weight=20)
+    dag.add_dependency(parent_service=svc_a, child_service=svc_b, weight=10)
+    dag.add_dependency(parent_service=svc_b, child_service=svc_c, weight=100)
+    
+    num_replica_for_cluster_0 = dict()
+    num_replica_for_cluster_1 = dict()
+    for svc in service_map:
+        if len(c0_req_arr) != 0:
+            num_replica_for_cluster_0[svc] = calc_initial_num_replica(c0_req_arr, service_map[svc])
+        else:
+            if svc == "User":
+                num_replica_for_cluster_0[svc] = 1 # NOTE: hardcoded
+            else:
+                num_replica_for_cluster_0[svc] = 2 # NOTE: hardcoded
+        if len(c1_req_arr) != 0:
+            num_replica_for_cluster_1[svc] = calc_initial_num_replica(c1_req_arr, service_map[svc])
+        else:
+            if svc == "User":
+                num_replica_for_cluster_1[svc] = 1 # NOTE: hardcoded
+            else:
+                num_replica_for_cluster_1[svc] = 2 # NOTE: hardcoded
+    print("- num_replica_for_cluster_0")
+    for svc in num_replica_for_cluster_0:
+        print("\t- {}: {}".format(svc, num_replica_for_cluster_0[svc]))
+    print("- num_replica_for_cluster_1")
+    for svc in num_replica_for_cluster_1:
+        print("\t- {}: {}".format(svc, num_replica_for_cluster_1[svc]))
+        
+    replica_for_cluster_0 = dict()
+    for svc in service_map:
+        replica_for_cluster_0[svc] = list()
+    replica_for_cluster_1 = dict()
+    for svc in service_map:
+        replica_for_cluster_1[svc] = list()
+        
+    # Replica
+    temp_all_replica = list()
+    # Replica for cluster 0
+    for svc in service_map:
+        for i in range(num_replica_for_cluster_0[svc]):
+            repl = Replica(service=service_map[svc], id=i*2)
+            service_map[svc].add_replica(repl)
+            temp_all_replica.append(repl)
+            replica_for_cluster_0[svc].append(repl) # replica id: 0,2,4,6
+    # Replica for cluster 1
+    for svc in service_map:
+        for i in range(num_replica_for_cluster_1[svc]):
+            repl = Replica(service=service_map[svc], id=i*2+1)
+            service_map[svc].add_replica(repl)
+            temp_all_replica.append(repl)
+            replica_for_cluster_1[svc].append(repl) # replica id: 1,3,5,7
+    
+    # Placement
+    for svc in replica_for_cluster_0:
+        for repl in replica_for_cluster_0[svc]:
+            if svc == "User":
+                placement.place_replica_to_node_and_allocate_core(repl, node_0, 0)
+            else:
+                placement.place_replica_to_node_and_allocate_core(repl, node_0, 1000)
+    for svc in replica_for_cluster_1:
+        for repl in replica_for_cluster_1[svc]:
+            if svc == "User":
+                placement.place_replica_to_node_and_allocate_core(repl, node_1, 1)
+            else:
+                placement.place_replica_to_node_and_allocate_core(repl, node_1, 1000)
+    # static_lb["User0"] = [0, 2, 4, 6] # dst replica id of cluster 0 frontend service
+    # static_lb["User1"] = [1, 3, 5, 7]
+    dag.print_service_and_replica()
+    for repl in temp_all_replica:
+        dag.register_replica(repl)
+    print("replica_for_cluster_0[User],", replica_for_cluster_0["User"][0].to_str())
+    print("replica_for_cluster_1[User],", replica_for_cluster_1["User"][0].to_str())
+    # replica_for_cluster_0["User"][0] since there is only one user replica for each cluster. 
+    return replica_for_cluster_0["User"][0], replica_for_cluster_1["User"][0], svc_a
+
+# Tree topology application
 def three_depth_application(load_balancer="RoundRobin", c0_req_arr=list(), c1_req_arr=list()):
     user = Service(name_="User", mcore_per_req_=0, processing_t_=0, lb_=load_balancer)
     # user_1 = Service(name_="User1", mcore_per_req_=0, processing_t_=0, lb_=load_balancer)
@@ -3269,6 +3368,7 @@ def three_depth_application(load_balancer="RoundRobin", c0_req_arr=list(), c1_re
     dag.add_service(svc_f)
     
     # DAG
+    # Heavy data transfer in the tail.
     dag.add_dependency(parent_service=user, child_service=svc_a, weight=10)
     # dag.add_dependency(parent_service=user_1, child_service=svc_a, weight=10)
     dag.add_dependency(parent_service=svc_a, child_service=svc_b, weight=10)
