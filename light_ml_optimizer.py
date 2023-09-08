@@ -31,20 +31,16 @@ NUM_CLUSTER = 3
 
 random.seed(1234)
 
-def trunc(temp): # utility function for node naming
-    st = temp.find("(")
-    temp = temp[:st]
-    return temp
 
 application = "tree" # "linear", "three_depth", "tree"
 if application == "linear":
-    sim.linear_topology_application(NUM_CLUSTER)
+    sim.linear_topology_application()
 elif application == "three_depth":
     sim.three_depth_application(NUM_CLUSTER)
 elif application == "tree":
     fan_out_degree = 3
-    no_child_constant = 0
-    depth = 3
+    no_child_constant = 1
+    depth = 4
     assert(no_child_constant < fan_out_degree)
     sim.general_tree_application(fan_out_degree, no_child_constant, depth, NUM_CLUSTER)
 else:
@@ -53,41 +49,49 @@ print(sim.dag.graph)
 sim.dag.print_dependency()
 
 
+for repl in sim.dag.all_replica:
+    if repl.service.name == "User":
+        print()
+    print(repl.name, end=", ")
+
 
 svc_name_list = list()
 compute_arc_var_name = list()
 per_service_compute_arc = dict()
 for repl in sim.dag.all_replica:
     # if repl.service.name != "User":
-    var_name = (trunc(repl.to_str())+"_start", trunc(repl.to_str())+"_end")
+    var_name = repl.name+sim.DELIMITER+"start", repl.name+sim.DELIMITER+"end"
     compute_arc_var_name.append(var_name)
     if repl.service.name not in per_service_compute_arc:
         per_service_compute_arc[repl.service.name] = list()
     per_service_compute_arc[repl.service.name].append(var_name)
     svc_name_list.append(repl.service.name)
 
+
 ## Define names of the variables for network arc in gurobi
+source_node = "src_*_*"+sim.DELIMITER+"*"+sim.DELIMITER+"*"
+destination_node = "dst_*_*"+sim.DELIMITER+"*"+sim.DELIMITER+"*"
+
 network_arc_var_name = list()
 for parent_repl in sim.dag.child_replica:
     for child_svc in sim.dag.child_replica[parent_repl]:
         child_repl_list = sim.dag.child_replica[parent_repl][child_svc]
         for child_repl in child_repl_list:
             if parent_repl.service.name == "User":
-                var_name = ("src_*_*", trunc(parent_repl.to_str())+"_start")
+                var_name = ("src_*_*"+sim.DELIMITER+"*"+sim.DELIMITER+"*", parent_repl.name+sim.DELIMITER+"start")
                 if var_name not in network_arc_var_name:
                     network_arc_var_name.append(var_name)
-                var_name = (trunc(parent_repl.to_str())+"_end", trunc(child_repl.to_str())+"_start")
+                var_name = (parent_repl.name+sim.DELIMITER+"end", child_repl.name+sim.DELIMITER+"start")
                 if var_name not in network_arc_var_name:
                     network_arc_var_name.append(var_name)
             else:
-                var_name = (trunc(parent_repl.to_str())+"_end",  trunc(child_repl.to_str())+"_start")
+                var_name = (parent_repl.name+sim.DELIMITER+"end",  child_repl.name+sim.DELIMITER+"start")
                 if var_name not in network_arc_var_name:
                     network_arc_var_name.append(var_name)
             if sim.dag.is_leaf(child_repl.service):
-                var_name = (trunc(child_repl.to_str())+"_end", "dst_*_*")
+                var_name = (child_repl.name+sim.DELIMITER+"end", "dst_*_*"+sim.DELIMITER+"*"+sim.DELIMITER+"*")
                 if var_name not in network_arc_var_name:
                     network_arc_var_name.append(var_name)
-print(network_arc_var_name)
 
 NUM_REQUEST = [500, 200, 100]
 assert len(NUM_REQUEST) == NUM_CLUSTER
@@ -105,16 +109,12 @@ for i in range(len(compute_arc_var_name)):
     x_repl_name += [compute_arc_var_name[i]] * num_data_point
     x_service_name += [svc_name_list[i]] * num_data_point
     for j in range(num_data_point):
-        svc_name = compute_arc_var_name[i][0].split("_")[0]
+        svc_name = compute_arc_var_name[i][0].split(sim.DELIMITER)[0]
         slope = abs(hash(svc_name)%10)+1
         if svc_name == "User":
             y_compute_time.append(0)
         else:
             y_compute_time.append(pow(x_rps[j],true_function_degree)*slope + 10)
-# print(len(x_service_name))
-# print(len(x_rps))
-# print(len(y_compute_time))
-# print(len(x_repl_name))
 
 compute_time_observation = pd.DataFrame(
     data={
@@ -124,6 +124,7 @@ compute_time_observation = pd.DataFrame(
     },
     index=x_repl_name
 )
+
 
 ## Per-service rps-to-compute time modeling.
 unique_service_name = list(compute_time_observation["service_name"].unique())
@@ -162,31 +163,46 @@ for svc_name in unique_service_name:
     y_pred = regressor_dict[svc_name].predict(X_test)
     print(f"- R^2: {np.round(r2_score(y_test, y_pred),5)}")
 
+
 min_rps = 0
 max_rps = max(x_rps)
 min_network_egress_cost = list()
 max_network_egress_cost = list()
 for src_repl, dst_repl in network_arc_var_name:
-    src_svc = src_repl.split("_")[0] # A
-    dst_svc = dst_repl.split("_")[0] # B
-    if src_svc == "src":
+    src_svc_name = src_repl.split(sim.DELIMITER)[0] # A
+    dst_svc_name = dst_repl.split(sim.DELIMITER)[0] # B
+    # print("src_svc_name:{}, dst_svc_name:{}".format(src_svc_name, dst_svc_name))
+    if src_svc_name == "src_*_*":
         min_network_egress_cost.append(0)
         max_network_egress_cost.append(0)
-    elif dst_svc == "dst":
+    elif dst_svc_name == "dst_*_*":
         min_network_egress_cost.append(0)
         max_network_egress_cost.append(0)
     else:
-        from_idx = int(src_repl.split("_")[1])
-        to_idx = int(dst_repl.split("_")[1])
+        # print(src_svc_name)
+        # print(src_repl.split("-"))
+        try:
+            # svc_name: [name]_[depth]_[local_id]
+            # [svc_name]-[cluster id]_[start or end]svc_0_0-0_start
+            src_idx = int(src_repl.split(sim.DELIMITER)[1])
+        except:
+            print(src_svc_name, src_repl, src_repl.split(sim.DELIMITER))
+        try:
+            dst_idx = int(dst_repl.split(sim.DELIMITER)[1])
+        except:
+            print(dst_svc_name, dst_repl, dst_repl.split(sim.DELIMITER))
         # local routing
-        if from_idx%2 == to_idx%2:
+        if src_idx%2 == dst_idx%2:
+            # print("local routing: src_svc_name:{}, dst_svc_name:{}".format(src_svc_name, dst_svc_name))
             min_network_egress_cost.append(0) # no egress charge on local routing
             max_network_egress_cost.append(0)
         # remote routing
         else:
-            min_network_egress_cost.append(sim.dag.weight_graph[src_svc][dst_svc])
-            max_network_egress_cost.append(sim.dag.weight_graph[src_svc][dst_svc])
-                
+            # print("remote routing: src_svc_name:{}, dst_svc_name:{}".format(src_svc_name, dst_svc_name))
+            min_network_egress_cost.append(sim.dag.weight_graph[src_svc_name][dst_svc_name])
+            max_network_egress_cost.append(sim.dag.weight_graph[src_svc_name][dst_svc_name])
+  
+
 network_egress_cost_data = pd.DataFrame(
     data={
         "min_network_egress_cost": min_network_egress_cost,
@@ -230,22 +246,29 @@ for svc_name in unique_service_name:
         index=per_service_compute_arc[svc_name]
     )
 
+
 min_network_latency = list()
 max_network_latency = list()
 for src_repl, dst_repl in network_arc_var_name:
-    src_svc = src_repl.split("_")[0]
-    dst_svc = dst_repl.split("_")[0]
-    if src_svc == "src":
+    src_svc_name = src_repl.split(sim.DELIMITER)[0]
+    dst_svc_name = dst_repl.split(sim.DELIMITER)[0]
+    if src_svc_name == "src_*_*":
         min_network_latency.append(0)
         max_network_latency.append(0)
-    elif dst_svc == "dst":
+    elif dst_svc_name == "dst_*_*":
         min_network_latency.append(0)
         max_network_latency.append(0)
     else:
-        from_idx = int(src_repl.split("_")[1])
-        to_idx = int(dst_repl.split("_")[1])
+        try:
+            src_idx = int(src_repl.split(sim.DELIMITER)[1])
+        except:
+            print("ERROR: ", src_svc_name, src_repl.split(sim.DELIMITER))
+        try:
+            dst_idx = int(dst_repl.split(sim.DELIMITER)[1])
+        except:
+            print("ERROR: ", dst_svc_name, dst_repl.split(sim.DELIMITER))
         # Network latency for local routing
-        if from_idx%2 == to_idx%2:
+        if src_idx%2 == dst_idx%2:
             min_network_latency.append(sim.NetworkLatency().same_rack)
             max_network_latency.append(sim.NetworkLatency().same_rack)
         # Network latency for remote routing
@@ -264,7 +287,7 @@ network_latency_data = pd.DataFrame(
     index=network_arc_var_name
 )
 
-###################################################
+
 ## Optimizer runtime timestamp, start time
 optimizer_start_time = time.time()
 
@@ -272,7 +295,12 @@ model = gp.Model('RequestRouting')
 # Add variables for the regression
 compute_time = dict()
 compute_rps = dict()
+# for svc_name in unique_service_name:
+#     print("svc_name, ", svc_name)
+
 for svc_name in unique_service_name:
+    #ValueError: Index contains duplicate entries, cannot create variables
+    print(svc_name)
     compute_time[svc_name] = gppd.add_vars(model, compute_time_data[svc_name], name="compute_time", lb="min_compute_time", ub="max_compute_time")
     compute_rps[svc_name] = gppd.add_vars(model, compute_time_data[svc_name], name="rps_for_compute_edge", lb="min_rps", ub="max_rps")
 # model.update()
@@ -338,40 +366,31 @@ for svc_name, c_rps in compute_rps.items():
 arcs, aggregated_rps = gp.multidict(pd.concat([network_rps, concat_compute_rps], axis=0).to_dict())
 
 ###################################################
-source = dict()
-destination = dict()
-source["src_*_*"] = TOTAL_NUM_REQUEST
-destination["dst_*_*"] = TOTAL_NUM_REQUEST
 node = dict()
 max_tput = TOTAL_NUM_REQUEST
 for repl in sim.dag.all_replica:
     if repl.service.name != "User":
-        node[trunc(repl.to_str())+"_start"] = max_tput
-        node[trunc(repl.to_str())+"_end"] = max_tput
+        node[repl.name+sim.DELIMITER+"start"] = max_tput
+        node[repl.name+sim.DELIMITER+"end"] = max_tput
 print(node)
 
-###################################################
-# Test print
-# print("<network_rps>")
-# print(network_rps)
-# print()
-# print("<aggregated_rps.select>")
-# print(aggregated_rps.select("A_0_end", "*"))
-# print()
-# print("<gp.quicksum(aggregated_rps.select>")
-# print(gp.quicksum(aggregated_rps.select("A_0_end", "*")))
-# print()
 
 ###################################################
 # Constraint 1: source
+source = dict()
+source[source_node] = TOTAL_NUM_REQUEST
+
+destination = dict()
+destination[destination_node] = TOTAL_NUM_REQUEST
+
 src_keys = source.keys()
 src_flow = model.addConstrs((gp.quicksum(aggregated_rps.select(src, '*')) == source[src] for src in src_keys), name="source")
 # per clustrer load constraint
 for repl in sim.dag.all_replica:
     if repl.service.name == "User":
-        start_node = trunc(repl.to_str())+"_start"
-        end_node = trunc(repl.to_str())+"_end"
-        cid = int(trunc(repl.to_str()).split("_")[1])
+        start_node = repl.name+sim.DELIMITER+"start"
+        end_node = repl.name+sim.DELIMITER+"end"
+        cid = int(repl.name.split(sim.DELIMITER)[1])
         print("gp.quicksum(aggregated_rps.select('*', start_node): ", gp.quicksum(aggregated_rps.select('*', start_node)))
         print("cid: ", cid)
         per_cluster_load_in = model.addConstr((gp.quicksum(aggregated_rps.select('*', start_node)) == NUM_REQUEST[cid]), name="cluster_"+str(cid)+"_load_in")
@@ -398,17 +417,17 @@ dst_flow = model.addConstrs((gp.quicksum(aggregated_rps.select('*', dst)) == des
 for repl in sim.dag.all_replica:
     # if repl.service.name != "User":
     # Start node in-out flow conservation
-    st = trunc(repl.to_str())+"_start"
+    st = repl.name+sim.DELIMITER+"start"
     node_flow = model.addConstr((gp.quicksum(aggregated_rps.select('*', st)) == gp.quicksum(aggregated_rps.select(st, '*'))), name="flow_conservation["+st+"]")
     # End node in-out flow conservation
-    en = trunc(repl.to_str())+"_end"
+    en = repl.name+sim.DELIMITER+"end"
     if sim.dag.is_leaf(repl.service):
         node_flow = model.addConstr((gp.quicksum(aggregated_rps.select('*', en)) == gp.quicksum(aggregated_rps.select(en, '*'))), name="flow_conservation["+en+"]")
     else:
         for child_svc in repl.child_services:
             out_sum = 0
             for child_repl in child_svc.replicas:
-                child_repl_name = trunc(child_repl.to_str()) + "_start"
+                child_repl_name = child_repl.name + sim.DELIMITER+"start"
                 out_sum += aggregated_rps.sum(en, child_repl_name)
             node_flow = model.addConstr((gp.quicksum(aggregated_rps.select('*', en)) == out_sum), name="flow_conservation["+en+"]")
 # model.update()
@@ -420,7 +439,7 @@ for svc in sim.dag.all_service:
         svc_repl = svc.replicas
         sum_ = 0
         for repl in svc_repl:
-            repl_name = trunc(repl.to_str()) + "_start"
+            repl_name = repl.name + sim.DELIMITER+"start"
             sum_ += aggregated_rps.sum('*', repl_name)
         #     print("repl_name:", repl_name)
         #     print("aggregated_rps.sum('*', repl_name):", aggregated_rps.sum('*', repl_name))
@@ -437,6 +456,7 @@ throughput = model.addConstrs((gp.quicksum(aggregated_rps.select('*', n_)) <= no
 ###################################################
 # Lazy update for model
 model.update()
+
 
 ###################################################
 ## File write constraint info
@@ -467,9 +487,14 @@ num_constr = len(df_constr)
 substract_time = time.time() - ts
    
 if model.Status == GRB.INFEASIBLE:
-    print("###########################")
-    print("#### INFEASIBLE MODEL! ####")
-    print("###########################")
+    print("XXXXXXXXXXXXXXXXXXXXXXXXXXX")
+    print("XXXX INFEASIBLE MODEL! XXXX")
+    print("XXXXXXXXXXXXXXXXXXXXXXXXXXX")
+    with pd.option_context('display.max_colwidth', None):
+        with pd.option_context('display.max_rows', None):
+            # display(df_var)
+            print(df_constr)
+    
     model.computeIIS()
     model.write("model.ilp")
     print('\nThe following constraints and variables are in the IIS:')
@@ -498,6 +523,7 @@ else:
     now = datetime.datetime.now()
     request_flow.to_csv(OUTPUT_DIR + now.strftime("%Y%m%d_%H:%M:%S") + "-" + application + "-light_model_solution.csv")
 
+
 g_ = graphviz.Digraph()
 # The node() method takes a name identifier as first argument and an optional label.
 # The edge() method takes the names of start node and end node
@@ -517,8 +543,8 @@ other_node_color = "#6973fa"
 total_num_remote_routing = 0
 if print_all:
     for repl_name, v in aggregated_rps.items():
-        src_replica_id = repl_name[0].split("_")[1]
-        dst_replica_id = repl_name[1].split("_")[1]
+        src_replica_id = repl_name[0].split(sim.DELIMITER)[1]
+        dst_replica_id = repl_name[1].split(sim.DELIMITER)[1]
         remote_routing = False
         if src_replica_id == '*' and dst_replica_id == '*':
             edge_color = "black"
@@ -589,3 +615,5 @@ print("*"*50)
 
 now =datetime .datetime.now()
 g_.render(now.strftime("%Y%m%d_%H:%M:%S") + '_call_graph', view = False) # output: call_graph.pdf
+g_
+
