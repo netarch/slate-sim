@@ -1,5 +1,6 @@
 import argparse
 import copy
+import string
 import heapq
 import graphviz
 import json
@@ -24,6 +25,9 @@ import logging
 
 np.random.seed(1234)
 
+DELIMITER = "#"
+
+NUM_CLUSTER = 2
 LOG_MACRO=False # not in CONFIG dictionary for convenience.
 
 CONFIG = dict()
@@ -171,7 +175,31 @@ class DAG:
                     for child_repl in superset_child_replica:
                         self.child_replica[repl][child_svc].append(child_repl)
                         if LOG_MACRO: utils.print_log("WARNING", "{}'s {} childe: {}".format(repl.to_str(), child_svc.name, child_repl.to_str()))
-                            
+                        
+    def find_replica_by_name(self, target_repl_name):
+        self.check_duplicate_replica(target_repl_name)
+        for repl in self.all_replica:
+            if repl.name == target_repl_name:
+                return repl
+            
+    def count_replica_by_name(self, target_repl_name):
+        cnt = 0
+        for repl in self.all_replica:
+            if repl.name == target_repl_name:
+                cnt += 1
+        return cnt
+                        
+    def check_duplicate_replica(self):    
+        for repl in self.all_replica:
+            cnt = self.count_replica_by_name(repl.name)
+            if cnt > 1:
+                print("There is duplicate replica name: {}, count: {}".format(repl.name, cnt))
+                assert False
+                        
+    def print_all_replica(self):
+        for repl in self.all_replica:
+            print(repl.name)
+           
     def deregister_replica(self, target_repl):
         if target_repl in self.child_replica:
             del self.child_replica[target_repl]
@@ -307,12 +335,7 @@ class DAG:
                     if LOG_MACRO: utils.print_log("DEBUG", "add edge: " + upstream.name + "->" + elem["service"].name)
                     g_.edge(upstream.name, elem["service"].name, style='solid', color='black', label=upstream.lb)
                 
-        # s = graphviz.Source.from_file(os.getcwd() + "/call_graph.dot")
-        # s.render('abcd.gv', format='jpg',view=True)
-        # # s.view()
-        
         ## Show graph
-        # g_.format = 'png'
         # g_.render('call_graph', view = True)
         
     def print_and_plot_processing_time():
@@ -452,10 +475,18 @@ class Node:
 # Assumption: infinite number of core
 # node_0: cluster 0
 # node_1: cluster 1
-node_0 = Node(region_id_=0, zone_id_=0, rack_id_=0, node_id_=0, total_mcore_=1000*100000)
-node_1 = Node(region_id_=1, zone_id_=0, rack_id_=0, node_id_=0, total_mcore_=1000*100000)
-placement.add_node(node_0)
-placement.add_node(node_1)
+
+nodes = list()
+## It is moved to app function
+# for cid in range(NUM_CLUSTER):
+#     n_ = Node(region_id_=cid, zone_id_=0, rack_id_=0, node_id_=0, total_mcore_=1000*100000)
+#     nodes.append(n_)
+#     placement.add_node(n_)
+    
+# node_0 = Node(region_id_=0, zone_id_=0, rack_id_=0, node_id_=0, total_mcore_=1000*100000)
+# node_1 = Node(region_id_=1, zone_id_=0, rack_id_=0, node_id_=0, total_mcore_=1000*100000)
+# placement.add_node(node_0)
+# placement.add_node(node_1)
 
 
 class Service:
@@ -476,7 +507,7 @@ class Service:
             self.capacity_per_replica = 99999999
         else:
             self.capacity_per_replica = 1000 / self.processing_time
-        print(self.name + " capacity: " + str(self.capacity_per_replica))
+        if LOG_MACRO: utils.print_log(self.name + " capacity: " + str(self.capacity_per_replica))
     
     
     def cluster_agg_queue_time(self, metric, cid):
@@ -1002,7 +1033,7 @@ class Replica:
         self.repl_avail_mcore = 0
         self.repl_avail_mcore_history = list()
         self.repl_history_size = 10
-        self.name = self.service.name + "_" + str(self.id)
+        self.name = self.service.name + DELIMITER + str(self.id)
         self.child_services = dag.get_child_services(self.service)
         self.child_replica = dict() # Multi-cluster aware
         self.processing_time_history = list()
@@ -3276,6 +3307,7 @@ def linear_topology_application(load_balancer="RoundRobin", c0_req_arr=list(), c
     num_replica_for_cluster_0 = dict()
     num_replica_for_cluster_1 = dict()
     for svc in service_map:
+        # Cluster 0
         if len(c0_req_arr) != 0:
             num_replica_for_cluster_0[svc] = calc_initial_num_replica(c0_req_arr, service_map[svc])
         else:
@@ -3283,11 +3315,16 @@ def linear_topology_application(load_balancer="RoundRobin", c0_req_arr=list(), c
                 num_replica_for_cluster_0[svc] = 1 # NOTE: hardcoded
             else:
                 num_replica_for_cluster_0[svc] = 2 # NOTE: hardcoded
+        # Cluster 1
         if len(c1_req_arr) != 0:
             num_replica_for_cluster_1[svc] = calc_initial_num_replica(c1_req_arr, service_map[svc])
         else:
             if svc == "User":
                 num_replica_for_cluster_1[svc] = 1 # NOTE: hardcoded
+            ########################################################
+            elif svc == "C":
+                num_replica_for_cluster_1[svc] = 0 # NOTE: C in cluster 2 is not available
+            ########################################################
             else:
                 num_replica_for_cluster_1[svc] = 2 # NOTE: hardcoded
     print("- num_replica_for_cluster_0")
@@ -3345,7 +3382,9 @@ def linear_topology_application(load_balancer="RoundRobin", c0_req_arr=list(), c
     return replica_for_cluster_0["User"][0], replica_for_cluster_1["User"][0], svc_a
 
 # Tree topology application
-def three_depth_application(load_balancer="RoundRobin", c0_req_arr=list(), c1_req_arr=list()):
+def three_depth_application(num_cluster, load_balancer="RoundRobin", c0_req_arr=list(), c1_req_arr=list()):
+    NUM_CLUSTER = num_cluster
+    
     user = Service(name_="User", mcore_per_req_=0, processing_t_=0, lb_=load_balancer)
     # user_1 = Service(name_="User1", mcore_per_req_=0, processing_t_=0, lb_=load_balancer)
     core_per_request = 1000
@@ -3378,79 +3417,179 @@ def three_depth_application(load_balancer="RoundRobin", c0_req_arr=list(), c1_re
     dag.add_dependency(parent_service=svc_d, child_service=svc_f, weight=10)
     
     
-    # num_replica_for_cluster_0 = {"A":3, "B":1, "C":2, "D":4, "E":3, "F":1}
-    # num_replica_for_cluster_1 = {"A":3, "B":1, "C":2, "D":4, "E":3, "F":1} # HotOS version
-    num_replica_for_cluster_0 = dict()
-    num_replica_for_cluster_1 = dict()
-    for svc in service_map:
-        if len(c0_req_arr) != 0:
-            num_replica_for_cluster_0[svc] = calc_initial_num_replica(c0_req_arr, service_map[svc])
-        else:
-            if svc == "User":
-                num_replica_for_cluster_0[svc] = 1 # NOTE: hardcoded
+    num_replica_for_cluster = list()
+    for _ in range(NUM_CLUSTER):
+        num_replica_for_cluster.append(dict())
+    for i in range(NUM_CLUSTER):
+        for svc_name in service_map:
+            if len(c0_req_arr) != 0:
+                num_replica_for_cluster[i][svc_name] = calc_initial_num_replica(c0_req_arr, service_map[svc_name])
             else:
-                num_replica_for_cluster_0[svc] = 2 # NOTE: hardcoded
-        if len(c1_req_arr) != 0:
-            num_replica_for_cluster_1[svc] = calc_initial_num_replica(c1_req_arr, service_map[svc])
-        else:
-            if svc == "User":
-                num_replica_for_cluster_1[svc] = 1 # NOTE: hardcoded
-            else:
-                num_replica_for_cluster_1[svc] = 2 # NOTE: hardcoded
-    print("- num_replica_for_cluster_0")
-    for svc in num_replica_for_cluster_0:
-        print("\t- {}: {}".format(svc, num_replica_for_cluster_0[svc]))
-    print("- num_replica_for_cluster_1")
-    for svc in num_replica_for_cluster_1:
-        print("\t- {}: {}".format(svc, num_replica_for_cluster_1[svc]))
-        
-    replica_for_cluster_0 = dict()
-    for svc in service_map:
-        replica_for_cluster_0[svc] = list()
-    replica_for_cluster_1 = dict()
-    for svc in service_map:
-        replica_for_cluster_1[svc] = list()
+                if svc_name == "User":
+                    num_replica_for_cluster[i][svc_name] = 1 # NOTE: hardcoded
+                else:
+                    num_replica_for_cluster[i][svc_name] = 2 # NOTE: hardcoded
+    for i in range(NUM_CLUSTER):
+        print("- num_replica_for_cluster_" + str(i))
+        for svc in num_replica_for_cluster[i]:
+            print("\t- {}: {}".format(svc, num_replica_for_cluster[i][svc]))
+
+    replica_for_cluster = list()
+    for _ in range(NUM_CLUSTER):
+        replica_for_cluster.append(dict())
+    for cid in range(NUM_CLUSTER):
+        for svc_name in service_map:
+            replica_for_cluster[cid][svc_name] = list()
+            # print(svc_name)
         
     # Replica
     temp_all_replica = list()
-    # Replica for cluster 0
-    for svc in service_map:
-        for i in range(num_replica_for_cluster_0[svc]):
-            repl = Replica(service=service_map[svc], id=i*2)
-            service_map[svc].add_replica(repl)
-            temp_all_replica.append(repl)
-            replica_for_cluster_0[svc].append(repl) # replica id: 0,2,4,6
-    # Replica for cluster 1
-    for svc in service_map:
-        for i in range(num_replica_for_cluster_1[svc]):
-            repl = Replica(service=service_map[svc], id=i*2+1)
-            service_map[svc].add_replica(repl)
-            temp_all_replica.append(repl)
-            replica_for_cluster_1[svc].append(repl) # replica id: 1,3,5,7
+    for i in range(NUM_CLUSTER):
+        for svc_name in service_map:
+            for j in range(num_replica_for_cluster[i][svc_name]):
+                replica_id = i+(j*NUM_CLUSTER)
+                repl = Replica(service=service_map[svc_name], id=replica_id)
+                service_map[svc_name].add_replica(repl)
+                temp_all_replica.append(repl)
+                replica_for_cluster[i][svc_name].append(repl) # replica id: 0,2,4,6
+    
+    global nodes
+    assert len(nodes) == 0
+    for cid in range(NUM_CLUSTER):
+        n_ = Node(region_id_=cid, zone_id_=0, rack_id_=0, node_id_=0, total_mcore_=1000*100000)
+        nodes.append(n_)
+        placement.add_node(n_)
     
     # Placement
-    for svc in replica_for_cluster_0:
-        for repl in replica_for_cluster_0[svc]:
-            if svc == "User":
-                placement.place_replica_to_node_and_allocate_core(repl, node_0, 0)
-            else:
-                placement.place_replica_to_node_and_allocate_core(repl, node_0, 1000)
-    for svc in replica_for_cluster_1:
-        for repl in replica_for_cluster_1[svc]:
-            if svc == "User":
-                placement.place_replica_to_node_and_allocate_core(repl, node_1, 1)
-            else:
-                placement.place_replica_to_node_and_allocate_core(repl, node_1, 1000)
+    print(len(nodes))
+    for i in range(NUM_CLUSTER):
+        for svc in replica_for_cluster[i]:
+            for repl in replica_for_cluster[i][svc]:
+                if svc == "User":
+                    placement.place_replica_to_node_and_allocate_core(repl, nodes[i], 0)
+                else:
+                    placement.place_replica_to_node_and_allocate_core(repl, nodes[i], 1000)
     # static_lb["User0"] = [0, 2, 4, 6] # dst replica id of cluster 0 frontend service
     # static_lb["User1"] = [1, 3, 5, 7]
     dag.print_service_and_replica()
     for repl in temp_all_replica:
         dag.register_replica(repl)
-    print("replica_for_cluster_0[User],", replica_for_cluster_0["User"][0].to_str())
-    print("replica_for_cluster_1[User],", replica_for_cluster_1["User"][0].to_str())
-    # replica_for_cluster_0["User"][0] since there is only one user replica for each cluster. 
-    return replica_for_cluster_0["User"][0], replica_for_cluster_1["User"][0], svc_a
+    dag.check_duplicate_replica()
+    return replica_for_cluster
+    # return replica_for_cluster_0["User"][0], replica_for_cluster_1["User"][0], svc_a
 
+
+def general_tree_application(fan_out_degree=3, no_child_constant=1, depth=3, num_cluster=2, load_balancer="RoundRobin", c0_req_arr=list(), c1_req_arr=list()):
+    alphabet = string.ascii_uppercase
+    NUM_CLUSTER = num_cluster
+    proliferation_degree = fan_out_degree - no_child_constant
+    assert(no_child_constant < fan_out_degree)
+    svc_list = list()
+    core_per_request = 1000
+    alpha_idx = 0
+    for d_ in range(depth):
+        local_idx = 0 # local_idx: id within the same depth. starting from 0 within the same depth
+        svc_list.append(list())
+        if d_ == 0:
+            svc_list[d_].append(Service(name_="User", mcore_per_req_=0, processing_t_=0, lb_=load_balancer))
+            print("depth,{}, num_svc: {}".format(d_, 0))
+            local_idx += 1
+        else:
+            if d_ == 1:
+                num_svc_within_depth = 1 # Frontend service in depth 1
+            else:
+                num_svc_within_depth = pow(proliferation_degree, d_-2) * fan_out_degree ## IMPORTANT
+            assert num_svc_within_depth <= len(alphabet)
+            for i in range(num_svc_within_depth):
+                # service_name = "svc_"+str(d_)+"_"+str(local_idx)
+                service_name = alphabet[alpha_idx]+"_"+str(d_)+"_"+str(local_idx)
+                svc_list[d_].append(Service(name_=service_name, mcore_per_req_=core_per_request, processing_t_=30, lb_=load_balancer))
+                local_idx += 1
+                alpha_idx += 1
+            print("depth-1,{}, proliferation_degree,{}, num_svc_within_depth: {}, fod, {}".format(d_-1, proliferation_degree, num_svc_within_depth, fan_out_degree))
+
+    for i in range(len(svc_list)):
+        for j in range(len(svc_list[i])):
+            print("depth,{}, svc, {}".format(i, svc_list[i][j].name))
+
+    service_map = dict()
+    for i in range(len(svc_list)):
+        for j in range(len(svc_list[i])):
+            service_map[svc_list[i][j].name] = svc_list[i][j]
+    
+    for i in range(len(svc_list)):
+        for j in range(len(svc_list[i])):
+            dag.add_service(svc_list[i][j])
+    
+    # DAG
+    for i in range(len(svc_list)):
+        if i == 0:
+            continue
+        for j in range(len(svc_list[i])):
+            parent_idx = int(j / (fan_out_degree))
+            print("parent_idx,{}, child_idx,{}".format(parent_idx, j))
+            dag.add_dependency(parent_service=svc_list[i-1][parent_idx], child_service=svc_list[i][j], weight = i*2+10)
+    dag.print_dependency()
+
+    num_replica_for_cluster = list()
+    for _ in range(NUM_CLUSTER):
+        num_replica_for_cluster.append(dict())
+    for i in range(NUM_CLUSTER):
+        for svc_name in service_map:
+            if len(c0_req_arr) != 0:
+                num_replica_for_cluster[i][svc_name] = calc_initial_num_replica(c0_req_arr, service_map[svc_name])
+            else:
+                if svc_name == "User":
+                    num_replica_for_cluster[i][svc_name] = 1 # NOTE: hardcoded
+                else:
+                    num_replica_for_cluster[i][svc_name] = 2 # NOTE: hardcoded
+    for i in range(NUM_CLUSTER):
+        print("- num_replica_for_cluster_" + str(i))
+        for svc in num_replica_for_cluster[i]:
+            print("\t- {}: {}".format(svc, num_replica_for_cluster[i][svc]))
+
+    replica_for_cluster = list()
+    for cid in range(NUM_CLUSTER):
+        replica_for_cluster.append(dict())
+    for cid in range(NUM_CLUSTER):
+        for svc_name in service_map:
+            replica_for_cluster[cid][svc_name] = list()
+            print(svc_name)
+        
+    # Replica
+    temp_all_replica = list()
+    for i in range(NUM_CLUSTER):
+        for svc_name in service_map:
+            for j in range(num_replica_for_cluster[i][svc_name]):
+                replica_id = i+(j*NUM_CLUSTER)
+                repl = Replica(service=service_map[svc_name], id=replica_id)
+                service_map[svc_name].add_replica(repl)
+                temp_all_replica.append(repl)
+                replica_for_cluster[i][svc_name].append(repl) # replica id: 0,2,4,6
+    
+    global nodes
+    assert len(nodes) == 0
+    for cid in range(NUM_CLUSTER):
+        n_ = Node(region_id_=cid, zone_id_=0, rack_id_=0, node_id_=0, total_mcore_=1000*100000)
+        nodes.append(n_)
+        placement.add_node(n_)
+    
+    # Placement
+    print(len(nodes))
+    for i in range(NUM_CLUSTER):
+        for svc in replica_for_cluster[i]:
+            for repl in replica_for_cluster[i][svc]:
+                if svc == "User":
+                    placement.place_replica_to_node_and_allocate_core(repl, nodes[i], 0)
+                else:
+                    placement.place_replica_to_node_and_allocate_core(repl, nodes[i], 1000)
+                    
+    dag.print_service_and_replica()
+    for repl in temp_all_replica:
+        dag.register_replica(repl)
+        
+    dag.check_duplicate_replica()
+    return replica_for_cluster
 
 # def calc_non_burst_rps(durations_ratio, moment_rps_, target_rps_):
 #     burst_num_req = 0
