@@ -3487,6 +3487,7 @@ def general_tree_application(fan_out_degree=3, no_child_constant=1, depth=3, num
     svc_list = list()
     core_per_request = 1000
     alpha_idx = 0
+    total_num_svc_in_each_depth = list()
     for d_ in range(depth):
         local_idx = 0 # local_idx: id within the same depth. starting from 0 within the same depth
         svc_list.append(list())
@@ -3494,11 +3495,14 @@ def general_tree_application(fan_out_degree=3, no_child_constant=1, depth=3, num
             svc_list[d_].append(Service(name_="User", mcore_per_req_=0, processing_t_=0, lb_=load_balancer))
             print("depth,{}, num_svc: {}".format(d_, 0))
             local_idx += 1
+            total_num_svc_in_each_depth.append(1)
         else:
             if d_ == 1:
                 num_svc_within_depth = 1 # Frontend service in depth 1
+                total_num_svc_in_each_depth.append(1)
             else:
                 num_svc_within_depth = pow(proliferation_degree, d_-2) * fan_out_degree ## IMPORTANT
+                total_num_svc_in_each_depth.append(num_svc_within_depth)
             assert num_svc_within_depth <= len(alphabet)
             for i in range(num_svc_within_depth):
                 # service_name = "svc_"+str(d_)+"_"+str(local_idx)
@@ -3589,7 +3593,7 @@ def general_tree_application(fan_out_degree=3, no_child_constant=1, depth=3, num
         dag.register_replica(repl)
         
     dag.check_duplicate_replica()
-    return replica_for_cluster
+    return replica_for_cluster, total_num_svc_in_each_depth
 
 # def calc_non_burst_rps(durations_ratio, moment_rps_, target_rps_):
 #     burst_num_req = 0
