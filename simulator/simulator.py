@@ -3480,6 +3480,8 @@ def three_depth_application(num_cluster, load_balancer="RoundRobin", c0_req_arr=
 
 
 def general_tree_application(fan_out_degree=3, no_child_constant=1, depth=3, num_cluster=2, load_balancer="RoundRobin", c0_req_arr=list(), c1_req_arr=list()):
+    ts_list = list()
+    ts_list.append(time.time())
     alphabet = string.ascii_uppercase
     NUM_CLUSTER = num_cluster
     proliferation_degree = fan_out_degree - no_child_constant
@@ -3493,7 +3495,7 @@ def general_tree_application(fan_out_degree=3, no_child_constant=1, depth=3, num
         svc_list.append(list())
         if d_ == 0:
             svc_list[d_].append(Service(name_="User", mcore_per_req_=0, processing_t_=0, lb_=load_balancer))
-            print("depth,{}, num_svc: {}".format(d_, 0))
+            if LOG_MACRO: utils.print_log("DEBUG", "depth,{}, num_svc: {}".format(d_, 0))
             local_idx += 1
             total_num_svc_in_each_depth.append(1)
         else:
@@ -3503,18 +3505,21 @@ def general_tree_application(fan_out_degree=3, no_child_constant=1, depth=3, num
             else:
                 num_svc_within_depth = pow(proliferation_degree, d_-2) * fan_out_degree ## IMPORTANT
                 total_num_svc_in_each_depth.append(num_svc_within_depth)
-            assert num_svc_within_depth <= len(alphabet)
+            # assert num_svc_within_depth <= len(alphabet)
             for i in range(num_svc_within_depth):
-                # service_name = "svc_"+str(d_)+"_"+str(local_idx)
-                service_name = alphabet[alpha_idx]+"_"+str(d_)+"_"+str(local_idx)
+                service_name = "svc_"+str(d_)+"_"+str(local_idx)
+                # service_name = alphabet[alpha_idx]+"_"+str(d_)+"_"+str(local_idx)
                 svc_list[d_].append(Service(name_=service_name, mcore_per_req_=core_per_request, processing_t_=30, lb_=load_balancer))
                 local_idx += 1
                 alpha_idx += 1
-            print("depth-1,{}, proliferation_degree,{}, num_svc_within_depth: {}, fod, {}".format(d_-1, proliferation_degree, num_svc_within_depth, fan_out_degree))
-
-    for i in range(len(svc_list)):
-        for j in range(len(svc_list[i])):
-            print("depth,{}, svc, {}".format(i, svc_list[i][j].name))
+            
+    ts_list.append(time.time())
+    print(ts_list[-1] - ts_list[-2])
+    
+    ## debug print
+    # for i in range(len(svc_list)):
+    #     for j in range(len(svc_list[i])):
+    #         print("depth,{}, svc, {}".format(i, svc_list[i][j].name))
 
     service_map = dict()
     for i in range(len(svc_list)):
@@ -3524,6 +3529,8 @@ def general_tree_application(fan_out_degree=3, no_child_constant=1, depth=3, num
     for i in range(len(svc_list)):
         for j in range(len(svc_list[i])):
             dag.add_service(svc_list[i][j])
+    ts_list.append(time.time())
+    print(ts_list[-1] - ts_list[-2])
     
     # DAG
     for i in range(len(svc_list)):
@@ -3531,10 +3538,14 @@ def general_tree_application(fan_out_degree=3, no_child_constant=1, depth=3, num
             continue
         for j in range(len(svc_list[i])):
             parent_idx = int(j / (fan_out_degree))
-            print("parent_idx,{}, child_idx,{}".format(parent_idx, j))
+            if LOG_MACRO: utils.print_log("DEBUG", "parent_idx,{}, child_idx,{}".format(parent_idx, j))
             dag.add_dependency(parent_service=svc_list[i-1][parent_idx], child_service=svc_list[i][j], weight = i*2+10)
-    dag.print_dependency()
-
+    ts_list.append(time.time())
+    print(ts_list[-1] - ts_list[-2])
+    
+    if LOG_MACRO:
+        dag.print_dependency()
+        
     num_replica_for_cluster = list()
     for _ in range(NUM_CLUSTER):
         num_replica_for_cluster.append(dict())
@@ -3546,11 +3557,14 @@ def general_tree_application(fan_out_degree=3, no_child_constant=1, depth=3, num
                 if svc_name == "User":
                     num_replica_for_cluster[i][svc_name] = 1 # NOTE: hardcoded
                 else:
-                    num_replica_for_cluster[i][svc_name] = 2 # NOTE: hardcoded
-    for i in range(NUM_CLUSTER):
-        print("- num_replica_for_cluster_" + str(i))
-        for svc in num_replica_for_cluster[i]:
-            print("\t- {}: {}".format(svc, num_replica_for_cluster[i][svc]))
+                    #############################################################
+                    num_replica_for_cluster[i][svc_name] = 1 # NOTE: hardcoded
+                    #############################################################
+    if LOG_MACRO:
+        for i in range(NUM_CLUSTER):
+            print("- num_replica_for_cluster_" + str(i))
+            for svc in num_replica_for_cluster[i]:
+                print("\t- {}: {}".format(svc, num_replica_for_cluster[i][svc]))
 
     replica_for_cluster = list()
     for cid in range(NUM_CLUSTER):
@@ -3558,7 +3572,7 @@ def general_tree_application(fan_out_degree=3, no_child_constant=1, depth=3, num
     for cid in range(NUM_CLUSTER):
         for svc_name in service_map:
             replica_for_cluster[cid][svc_name] = list()
-            print(svc_name)
+            # print(svc_name)
         
     # Replica
     temp_all_replica = list()
@@ -3578,8 +3592,11 @@ def general_tree_application(fan_out_degree=3, no_child_constant=1, depth=3, num
         nodes.append(n_)
         placement.add_node(n_)
     
+    ts_list.append(time.time())
+    print(ts_list[-1] - ts_list[-2])
+    
     # Placement
-    print(len(nodes))
+    # print("total num nodes: ", len(nodes))
     for i in range(NUM_CLUSTER):
         for svc in replica_for_cluster[i]:
             for repl in replica_for_cluster[i][svc]:
@@ -3587,12 +3604,32 @@ def general_tree_application(fan_out_degree=3, no_child_constant=1, depth=3, num
                     placement.place_replica_to_node_and_allocate_core(repl, nodes[i], 0)
                 else:
                     placement.place_replica_to_node_and_allocate_core(repl, nodes[i], 1000)
-                    
-    dag.print_service_and_replica()
+    ts_list.append(time.time())
+    print(ts_list[-1] - ts_list[-2])
+      
+    ## print all service in all cluster     
+    # dag.print_service_and_replica()
+    
+    ts_list.append(time.time())
+    print(ts_list[-1] - ts_list[-2])
+    
     for repl in temp_all_replica:
         dag.register_replica(repl)
-        
-    dag.check_duplicate_replica()
+    ts_list.append(time.time())
+    print(ts_list[-1] - ts_list[-2])
+    
+    ## too slow
+    # dag.check_duplicate_replica()
+    # ts_list.append(time.time())
+    # print(ts_list[-1] - ts_list[-2])
+    
+    ## timestamp print
+    # print("$"*30)
+    # for i in range(1, len(ts_list)):
+    #     print(ts_list[i] - ts_list[i-1], end=", ")
+    # print()
+    # print("$"*30)
+    
     return replica_for_cluster, total_num_svc_in_each_depth
 
 # def calc_non_burst_rps(durations_ratio, moment_rps_, target_rps_):
