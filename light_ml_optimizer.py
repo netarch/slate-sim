@@ -159,12 +159,14 @@ if __name__ == "__main__":
     # print()
 
     svc_name_list = list()
-    compute_arc_var_name = list()
+    # compute_arc_var_name = list()
+    compute_arc_var_name = dict()
     per_service_compute_arc = dict()
     for repl in sim.dag.all_replica:
         # if repl.service.name != "User":
         var_name = repl.name+sim.DELIMITER+"start", repl.name+sim.DELIMITER+"end"
-        compute_arc_var_name.append(var_name)
+        # compute_arc_var_name.append(var_name)
+        compute_arc_var_name[var_name] = 8888 # dummy value, we will only use key
         if repl.service.name not in per_service_compute_arc:
             per_service_compute_arc[repl.service.name] = list()
         per_service_compute_arc[repl.service.name].append(var_name)
@@ -177,7 +179,8 @@ if __name__ == "__main__":
     ## Define names of the variables for network arc in gurobi
     source_node = "src_*_*"+sim.DELIMITER+"*"+sim.DELIMITER+"*"
     destination_node = "dst_*_*"+sim.DELIMITER+"*"+sim.DELIMITER+"*"
-    network_arc_var_name = list()
+    # network_arc_var_name = list()
+    network_arc_var_name = dict()
     var_name_time = 0
     append_time = 0
     exist_time = 0
@@ -196,7 +199,8 @@ if __name__ == "__main__":
                     if exist == False:
                     # if var_name not in network_arc_var_name:
                         ts = time.time()
-                        network_arc_var_name.append(var_name)
+                        # network_arc_var_name.append(var_name)
+                        network_arc_var_name[var_name] = 9999 # value is dummy
                         append_time += (time.time() - ts)
                     else:
                         exist_check_cnt += 1
@@ -209,7 +213,8 @@ if __name__ == "__main__":
                     if exist == False:
                     # if var_name not in network_arc_var_name:
                         ts = time.time()
-                        network_arc_var_name.append(var_name)
+                        # network_arc_var_name.append(var_name)
+                        network_arc_var_name[var_name] = 9999 # value is dummy
                         append_time += (time.time() - ts)
                     else:
                         exist_check_cnt += 1
@@ -223,7 +228,8 @@ if __name__ == "__main__":
                     if exist == False:
                     # if var_name not in network_arc_var_name:
                         ts = time.time()
-                        network_arc_var_name.append(var_name)
+                        # network_arc_var_name.append(var_name)
+                        network_arc_var_name[var_name] = 9999 # value is dummy
                         append_time += (time.time() - ts)
                     else:
                         exist_check_cnt += 1
@@ -237,11 +243,13 @@ if __name__ == "__main__":
                     if exist == False:
                     # if var_name not in network_arc_var_name:
                         ts = time.time()
-                        network_arc_var_name.append(var_name)
+                        # network_arc_var_name.append(var_name)
+                        network_arc_var_name[var_name] = 9999 # value is dummy
                         append_time += (time.time() - ts)
                     else:
                         exist_check_cnt += 1
-    print("APPEND TIME, "+str(append_time))
+    # print("APPEND TIME, "+str(append_time))
+    print("DICTIONARY INSERT TIME, "+str(append_time))
     print("VAR_NAME TIME, "+str(var_name_time))
     print("EXIST TIME, "+str(exist_time))
     print("EXIST CNT, "+str(exist_check_cnt))
@@ -262,13 +270,17 @@ if __name__ == "__main__":
     y_compute_time = list()
     x_repl_name = list()
     ts = time.time()
-    print("len(compute_arc_var_name): ", len(compute_arc_var_name))
-    for i in range(len(compute_arc_var_name)):
+    compute_arc_var_name_list = list(compute_arc_var_name.keys())
+    print("len(compute_arc_var_name): ", len(compute_arc_var_name_list))
+    # for i in range(len(compute_arc_var_name)):
+    for i in range(len(compute_arc_var_name_list)):
         x_rps += list(np.arange(0,num_data_point))
-        x_repl_name += [compute_arc_var_name[i]] * num_data_point
+        # x_repl_name += [compute_arc_var_name[i]] * num_data_point
+        x_repl_name += [compute_arc_var_name_list[i]] * num_data_point
         x_service_name += [svc_name_list[i]] * num_data_point
         for j in range(num_data_point):
-            svc_name = compute_arc_var_name[i][0].split(sim.DELIMITER)[0]
+            # svc_name = compute_arc_var_name[i][0].split(sim.DELIMITER)[0]
+            svc_name = compute_arc_var_name_list[i][0].split(sim.DELIMITER)[0]
             slope = abs(hash(svc_name)%10)+1
             y_intercept = 5
             if svc_name == "User":
@@ -360,7 +372,10 @@ if __name__ == "__main__":
     max_rps = sum(flags.NUM_REQUEST)
     min_network_egress_cost = list()
     max_network_egress_cost = list()
-    for src_repl, dst_repl in network_arc_var_name:
+    # for src_repl, dst_repl in network_arc_var_name:
+    network_arc_var_name_list = list(network_arc_var_name.keys())
+    for src_repl, dst_repl in network_arc_var_name_list:
+    # for src_repl, dst_repl in network_arc_var_name:
         src_svc_name = src_repl.split(sim.DELIMITER)[0] # A
         dst_svc_name = dst_repl.split(sim.DELIMITER)[0] # B
         # print_log("src_svc_name:{}, dst_svc_name:{}".format(src_svc_name, dst_svc_name))
@@ -398,15 +413,17 @@ if __name__ == "__main__":
         data={
             "min_network_egress_cost": min_network_egress_cost,
             "max_network_egress_cost": max_network_egress_cost,
-            # "min_rps":[min_rps]*len(network_arc_var_name),
-            # "max_rps":[max_rps]*len(network_arc_var_name),
+            # "min_rps":[min_rps]*len(network_arc_var_name_list),
+            # "max_rps":[max_rps]*len(network_arc_var_name_list),
         },
-        index=network_arc_var_name
+        index=network_arc_var_name_list
+        # index=network_arc_var_name
     )
 
     min_compute_egress_cost = list()
     max_compute_egress_cost = list()
-    for src_repl, dst_repl in compute_arc_var_name:
+    for src_repl, dst_repl in compute_arc_var_name_list:
+    # for src_repl, dst_repl in compute_arc_var_name:
         # compute edge does not involve any networking
         min_compute_egress_cost.append(0)
         max_compute_egress_cost.append(0)
@@ -441,7 +458,7 @@ if __name__ == "__main__":
 
     min_network_latency = list()
     max_network_latency = list()
-    for src_repl, dst_repl in network_arc_var_name:
+    for src_repl, dst_repl in network_arc_var_name_list:
         src_svc_name = src_repl.split(sim.DELIMITER)[0]
         dst_svc_name = dst_repl.split(sim.DELIMITER)[0]
         if src_svc_name == "src_*_*":
@@ -470,13 +487,14 @@ if __name__ == "__main__":
 
     network_latency_data = pd.DataFrame(
         data={
-            # "service_name":network_arc_var_name,
-            "min_rps":[min_rps]*len(network_arc_var_name),
-            "max_rps":[max_rps]*len(network_arc_var_name),
+            # "service_name":network_arc_var_name_list,
+            "min_rps":[min_rps]*len(network_arc_var_name_list),
+            "max_rps":[max_rps]*len(network_arc_var_name_list),
             "min_network_latency": min_network_latency,
             "max_network_latency": max_network_latency,
         },
-        index=network_arc_var_name
+        index=network_arc_var_name_list
+        # index=network_arc_var_name
     )
     LOG_TIMESTAMP("creating egress cost and compute/network latency dataframe")
 
@@ -737,13 +755,13 @@ if __name__ == "__main__":
             LOG_TIMESTAMP("file write model output")
             
         ## Performance log write
-        # print("@@, App, num_constr, num_gurobi_var, compute_arc_var_name, network_arc_var_name, NUM_CLUSTER, depth, total_num_svc, fan_out_degree, no_child_constant, regressor_degree,  optimizer_runtime, solve_runtime")
+        # print("@@, App, num_constr, num_gurobi_var, compute_arc_var_name_list, network_arc_var_name_list, NUM_CLUSTER, depth, total_num_svc, fan_out_degree, no_child_constant, regressor_degree,  optimizer_runtime, solve_runtime")
         print("@@, ",end="")
         print(flags.application + "," + \
                 str(num_constr) + "," + \
                 str(num_var) + "," + \
-                str(len(compute_arc_var_name)) + "," + \
-                str(len(network_arc_var_name)) + "," + \
+                str(len(compute_arc_var_name_list)) + "," + \
+                str(len(network_arc_var_name_list)) + "," + \
                 str(flags.NUM_CLUSTER) + "," + \
                 str(flags.depth) + "," + \
                 str(sum(total_num_svc_in_each_depth)) + "," + \
