@@ -38,17 +38,26 @@ OUTPUT_WRITE=False
 DUMMY_REGRESSOR=True
 
 timestamp_list = list()
+temp_timestamp_list = list()
 def LOG_TIMESTAMP(event_name):
     timestamp_list.append([event_name, time.time()])
     if len(timestamp_list) > 1:
         print("Finished, " + event_name + ", duration, " + str(round(timestamp_list[-1][1] - timestamp_list[-2][1], 5)))
-    
-def print_timestamp():
+
+def TEMP_LOG_TIMESTAMP(event_name):
+    temp_timestamp_list.append([event_name, time.time()])
+    if len(temp_timestamp_list) > 1:
+        print("Finished, " + event_name + ", duration, " + str(round(timestamp_list[-1][1] - timestamp_list[-2][1], 5)))
+        
+def prettyprint_timestamp():
+    print()
     print("*"*30)
     print("** timestamp_list(ms)")
     for i in range(1, len(timestamp_list)):
         print(timestamp_list[i][0], end=",")
-    print()
+    print()    
+
+def print_timestamp():
     for i in range(1, len(timestamp_list)):
         print(round((timestamp_list[i][1] - timestamp_list[i-1][1]), 5), end=",")
     print()
@@ -163,30 +172,80 @@ if __name__ == "__main__":
 
     LOG_TIMESTAMP("defining compute_arc_var_name")
 
+    network_arc_loop_cnt = 0
+    exist_check_cnt = 0
     ## Define names of the variables for network arc in gurobi
     source_node = "src_*_*"+sim.DELIMITER+"*"+sim.DELIMITER+"*"
     destination_node = "dst_*_*"+sim.DELIMITER+"*"+sim.DELIMITER+"*"
     network_arc_var_name = list()
+    var_name_time = 0
+    append_time = 0
+    exist_time = 0
     for parent_repl in sim.dag.child_replica:
         for child_svc in sim.dag.child_replica[parent_repl]:
             child_repl_list = sim.dag.child_replica[parent_repl][child_svc]
             for child_repl in child_repl_list:
+                network_arc_loop_cnt += 1
                 if parent_repl.service.name == "User":
+                    ts = time.time()
                     var_name = ("src_*_*"+sim.DELIMITER+"*"+sim.DELIMITER+"*", parent_repl.name+sim.DELIMITER+"start")
-                    if var_name not in network_arc_var_name:
+                    var_name_time += (time.time() - ts)
+                    ts = time.time()
+                    exist = var_name in network_arc_var_name
+                    exist_time += (time.time() - ts)
+                    if exist == False:
+                    # if var_name not in network_arc_var_name:
+                        ts = time.time()
                         network_arc_var_name.append(var_name)
+                        append_time += (time.time() - ts)
+                    else:
+                        exist_check_cnt += 1
+                    ts = time.time()
                     var_name = (parent_repl.name+sim.DELIMITER+"end", child_repl.name+sim.DELIMITER+"start")
-                    if var_name not in network_arc_var_name:
+                    var_name_time += (time.time() - ts)
+                    ts = time.time()
+                    exist = var_name in network_arc_var_name
+                    exist_time += (time.time() - ts)
+                    if exist == False:
+                    # if var_name not in network_arc_var_name:
+                        ts = time.time()
                         network_arc_var_name.append(var_name)
+                        append_time += (time.time() - ts)
+                    else:
+                        exist_check_cnt += 1
                 else:
+                    ts = time.time()
                     var_name = (parent_repl.name+sim.DELIMITER+"end",  child_repl.name+sim.DELIMITER+"start")
-                    if var_name not in network_arc_var_name:
+                    var_name_time += (time.time() - ts)
+                    ts = time.time()
+                    exist = var_name in network_arc_var_name
+                    exist_time += (time.time() - ts)
+                    if exist == False:
+                    # if var_name not in network_arc_var_name:
+                        ts = time.time()
                         network_arc_var_name.append(var_name)
+                        append_time += (time.time() - ts)
+                    else:
+                        exist_check_cnt += 1
                 if sim.dag.is_leaf(child_repl.service):
+                    ts = time.time()
                     var_name = (child_repl.name+sim.DELIMITER+"end", "dst_*_*"+sim.DELIMITER+"*"+sim.DELIMITER+"*")
-                    if var_name not in network_arc_var_name:
+                    var_name_time += (time.time() - ts)
+                    ts = time.time()
+                    exist = var_name in network_arc_var_name
+                    exist_time += (time.time() - ts)
+                    if exist == False:
+                    # if var_name not in network_arc_var_name:
+                        ts = time.time()
                         network_arc_var_name.append(var_name)
-    LOG_TIMESTAMP("defining network_arc_var_name")
+                        append_time += (time.time() - ts)
+                    else:
+                        exist_check_cnt += 1
+    print("APPEND TIME, "+str(append_time))
+    print("VAR_NAME TIME, "+str(var_name_time))
+    print("EXIST TIME, "+str(exist_time))
+    print("EXIST CNT, "+str(exist_check_cnt))
+    LOG_TIMESTAMP("defining network_arc_var_name("+str(network_arc_loop_cnt)+")")
 
     assert len(flags.NUM_REQUEST) == flags.NUM_CLUSTER
     TOTAL_NUM_REQUEST = sum(flags.NUM_REQUEST)
@@ -678,11 +737,13 @@ if __name__ == "__main__":
             LOG_TIMESTAMP("file write model output")
             
         ## Performance log write
-        # print("@@, App, num_constr, num_var, NUM_CLUSTER, depth, total_num_svc, fan_out_degree, no_child_constant, regressor_degree,  optimizer_runtime, solve_runtime")
+        # print("@@, App, num_constr, num_gurobi_var, compute_arc_var_name, network_arc_var_name, NUM_CLUSTER, depth, total_num_svc, fan_out_degree, no_child_constant, regressor_degree,  optimizer_runtime, solve_runtime")
         print("@@, ",end="")
         print(flags.application + "," + \
                 str(num_constr) + "," + \
                 str(num_var) + "," + \
+                str(len(compute_arc_var_name)) + "," + \
+                str(len(network_arc_var_name)) + "," + \
                 str(flags.NUM_CLUSTER) + "," + \
                 str(flags.depth) + "," + \
                 str(sum(total_num_svc_in_each_depth)) + "," + \
@@ -695,6 +756,7 @@ if __name__ == "__main__":
                 # total_num_svc_in_each_depth, \
                 # constraint_setup_time, \
                 # flags.NUM_REQUEST, \
+        prettyprint_timestamp()
         print_timestamp()
 
     if GRAPHVIZ:
