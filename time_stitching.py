@@ -73,18 +73,19 @@ def file_read(path_):
 
 
 class Span:
-    def __init__(self, svc, span_id, parent_span_id, st, et, load):
+    def __init__(self, svc, my_span_id, parent_span_id, st, et, load):
         self.svc_name = svc
-        self.span_id = span_id
+        self.my_span_id = my_span_id
         self.parent_span_id = parent_span_id
-        self.duration = et - st
+        self.rt = et - st
         self.st = st
         self.et = et
         self.root = (parent_span_id=="")
         self.load = load
+        self.xt = 0
     
     def print(self):
-        print("SPAN,{},{}->{},{},{},{},{}".format(self.svc_name, self.parent_span_id, self.span_id, self.st, self.et, self.duration, self.load))
+        print("SPAN,{},{}->{},{},{},{},{},{}".format(self.svc_name, self.parent_span_id, self.my_span_id, self.st, self.et, self.rt, self.xt, self.load))
 
 # <Trace Id> <Span Id> <Parent Span Id> <Start Time> <End Time>
 # <Parent Span Id> will not exist for the frontend service. e.g., productpage service in bookinfo
@@ -141,7 +142,7 @@ def parse(lines):
                                 traces_[tid][service_name] = span
                             else:
                                 print_error(service_name + " already exists in trace["+tid+"]")
-                            # print(str(span.span_id) + " is added to " + tid + "len, "+ str(len(traces_[tid])))
+                            # print(str(span.my_span_id) + " is added to " + tid + "len, "+ str(len(traces_[tid])))
                             filtered_lines.append(lines[i])
                     #######################################################
                 except ValueError:
@@ -155,6 +156,7 @@ def parse(lines):
 # span_to_service_name = dict()
 
 FRONTEND_svc = "productpage-v1"
+span_id_of_FRONTEND_svc = ""
 REVIEW_V1_svc = "reviews-v1"
 REVIEW_V2_svc = "reviews-v2"
 REVIEW_V3_svc = "reviews-v3"
@@ -169,6 +171,7 @@ def remove_incomplete_trace(traces_):
     removed_traces_ = dict()
     what = dict()
     ret_traces_ = dict()
+    weird_span_id = 0
     for tid, spans in traces_.items():
         if FRONTEND_svc not in spans or DETAIL_svc not in spans:
             removed_traces_[tid] = spans
@@ -180,9 +183,12 @@ def remove_incomplete_trace(traces_):
             removed_traces_[tid] = spans
         elif len(spans) == max_trace_len and REVIEW_V2_svc not in spans and REVIEW_V3_svc not in spans:
             removed_traces_[tid] = spans
+        elif spans[FRONTEND_svc].parent_span_id != span_id_of_FRONTEND_svc:
+            removed_traces_[tid] = spans
+            weird_span_id += 1
         else:
             ret_traces_[tid] = spans
-    
+    print("weird_span_id: ", weird_span_id)
     assert input_trace_len == len(ret_traces_) + len(removed_traces_)
     
     print("#input trace: " + str(input_trace_len))
@@ -236,56 +242,135 @@ graph = {
 #         visited_.add(node_)
 #         for neighbour in graph_[node_]:
 #             dfs(visited_, graph_, neighbour)
+
+
+def print_graph(graph_):
+    for parent, children in graph_.items():
+        print("parent: " + parent.svc_name + "("+parent.my_span_id+"), child: " , end="")
+        for child in children:
+            print(child.svc_name + "("+child.my_span_id+")," , end="")
+        print()
+
+'''
+parallel-1
+    ----------------------A
+        -----------B
+           -----C
+parallel-2
+    ----------------------A
+        --------B
+             ---------C
+'''
+def is_parallel_execution(span_a, span_b):
+    assert span_a.parent_span_id == span_b.parent_span_id
+    if span_a.st < span_b.st:
+        earlier_start_span = span_a
+        later_start_span = span_b
+    else:
+        earlier_start_span = span_b
+        later_start_span = span_a
+    if earlier_start_span.et > later_start_span.st and later_start_span.et > earlier_start_span.st: # parallel execution
+        if earlier_start_span.st < later_start_span.st and earlier_start_span.et > later_start_span.et: # parallel-1
+            return 1
+        else: # parallel-2
+            return 2
+    else: # sequential execution
+        return 0
                 
 def spans_to_graph(spans_):
     visited = set()
     graph = dict()
     # parent_span = spans_[root_svc]
     for _, parent_span in spans_.items():
-        graph[parent_span] = list() 
+        graph[parent_span] = list()
+        max_child_rt = 0
+        child_spans = list()
         for _, span in spans_.items():
             if span not in visited:
-                if span.parent_span_id == parent_span.span_id:
+                if span.parent_span_id == parent_span.my_span_id:
+                    child_spans.append(span)
                     graph[parent_span].append(span)
                     visited.add(span)
-                    # ASSUMPTION of visited: there is always only one parent service. If one service is a child service of some parent service, there is any other parent service for this child service.
+                    # NOTE: ASSUMPTION of visited: there is always only one parent service. If one service is a child service of some parent service, there is any other parent service for this child service.
                     # For example, A->C, B->C is NOT possible.
+        # exhaustive search
+        exclude_child_rt = 0
+        for i in range(len(child_spans)):
+            for j in range(i+1, len(child_spans)):
+                is_parallel = is_parallel_execution(child_spans[i], child_spans[j])
+                if is_parallel == 1 or is_parallel == 2: # parallel execution
+                    # TODO: parallel-1 and parallel-2 should be dealt with individually.
+                    exclude_child_rt = max(child_spans[i].rt, child_spans[j].rt)
+                    print("{} and {} are parallel-{}".format(child_spans[i].svc_name, child_spans[j].svc_name, is_parallel))
+                else: # sequential execution
+                    exclude_child_rt = child_spans[i].rt + child_spans[j].rt
+                    print("{} and {} are sequential".format(child_spans[i].svc_name, child_spans[j].svc_name))
+        parent_span.xt = parent_span.rt - exclude_child_rt
+        if parent_span.xt < 0:
+            print("parent_span")
+            parent_span.print()
+            print("child_spans")
+            for span in child_spans:
+                span.print()
+            print_error("parent_span exclusive time cannot be negative value: {}".format(parent_span.xt))
         if len(graph[parent_span]) == 0:
             del graph[parent_span]
     return graph
+
+def traces_to_graphs(traces_):
+    graphs = dict()
+    for tid, spans in traces_.items():
+        g_ = spans_to_graph(spans)
+        graphs[tid] = g_
+        # print()
+        # print("="*10)
+        # print_graph(g_)
+        # print("="*10)
+    return graphs
+
+'''
+svc_name,parent_span_id->my_span_id,               st,et,rt,xt,l
+SPAN,details-v1,be8c4a1a9dee780c->c687ceb94c8e324f,249,253,4,4,38
+SPAN,reviews-v3,be8c4a1a9dee780c->09f1f15b23c87ca2,278,284,6,5,13
+SPAN,productpage-v1,->be8c4a1a9dee780c,0,310,310,304,25
+SPAN,ratings-v1,09f1f15b23c87ca2->c8a990c5d5fc05fa,281,282,1,1,31
+
+Trace: fdc99eac6a1fbbc8be8c4a1a9dee780c
+     svc_name,parent_span_id->my_span_id,          st,et,rt,xt,l
+SPAN,details-v1,be8c4a1a9dee780c->c687ceb94c8e324f,249,253,4,4,38
+SPAN,reviews-v3,be8c4a1a9dee780c->09f1f15b23c87ca2,278,284,6,6,13
+SPAN,productpage-v1,->be8c4a1a9dee780c,0,310,310,300,25
+SPAN,ratings-v1,09f1f15b23c87ca2->c8a990c5d5fc05fa,281,282,1,1,31
+'''
+# def calc_exclusive_time(spans_, g_):
+#     for span in spans_:
         
 
-def print_graph(graph_):
-    for parent, children in graph_.items():
-        print("parent: " + parent.svc_name + "("+parent.span_id+"), child: " , end="")
-        for child in children:
-            print(child.svc_name + "("+child.span_id+")," , end="")
-        print()
-
-def append_exclusive_time(traces_):
-    for tid, spans in traces_.items():
-        graph = spans_to_graph(spans)
-        print()
-        print("="*10)
-        print_graph(graph)
-        print("="*10)
-    return traces_
+# def append_exclusvie_time(traces_, graphs_):
+#     # for tid, spans in traces_.items():
+#     for tid in traces_:
+#         x_time = calc_exclusvie_time(traces_[tid], graphs_[tid])
+#     return traces_
 
 LOG_PATH = "./trace_and_load_log.txt"
 
 if __name__ == "__main__":
     print_log("time stitching")
     lines = file_read(LOG_PATH)
+    
     filtered_lines, traces = parse(lines)
     traces, removed_traces = remove_incomplete_trace(traces)
     traces = change_to_relative_time(traces)
-    traces = append_exclusive_time(traces)
+    graphs = traces_to_graphs(traces)
+    
     print("*"*50)
     for tid, spans in traces.items():
-        print()
+        print("="*30)
         print("Trace: " + tid)
+        # print_graph(graphs[tid])
         for _, span in spans.items():
             span.print()
+        print("="*30)
     
     print()
     print("#final valid traces: " + str(len(traces)))
