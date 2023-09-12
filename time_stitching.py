@@ -12,6 +12,7 @@ import graphviz
 import gurobipy as gp
 from gurobipy import GRB
 import copy
+from pprint import pprint
 
 sys.path.append("simulator")
 from simulator import simulator as sim
@@ -72,17 +73,18 @@ def file_read(path_):
 
 
 class Span:
-    def __init__(self, svc, span_id, pspan_id, st, et):
+    def __init__(self, svc, span_id, parent_span_id, st, et, load):
         self.svc_name = svc
         self.span_id = span_id
-        self.pspan_id = pspan_id
+        self.parent_span_id = parent_span_id
         self.duration = et - st
         self.st = st
         self.et = et
-        self.root = (pspan_id=="")
+        self.root = (parent_span_id=="")
+        self.load = load
     
     def print(self):
-        print("SPAN,{},{}->{},{},({}-{})".format(self.svc_name, self.pspan_id, self.span_id, self.duration, self.st, self.et))
+        print("SPAN,{},{}->{},{},{},{},{}".format(self.svc_name, self.parent_span_id, self.span_id, self.st, self.et, self.duration, self.load))
 
 # <Trace Id> <Span Id> <Parent Span Id> <Start Time> <End Time>
 # <Parent Span Id> will not exist for the frontend service. e.g., productpage service in bookinfo
@@ -90,7 +92,7 @@ class Span:
 
 SPAN_DELIM = " "
 SPAN_TOKEN_LEN = 5
-def parse_and_create_span(line, svc):
+def parse_and_create_span(line, svc, load):
     tokens = line.split(SPAN_DELIM)
     if len(tokens) != SPAN_TOKEN_LEN:
         print_error("Invalid token length in span line. len(tokens):{}, line: {}".format(len(tokens), line))
@@ -99,7 +101,7 @@ def parse_and_create_span(line, svc):
     psid = tokens[2]
     st = int(tokens[3])
     et = int(tokens[4])
-    span = Span(svc, sid, psid, st, et)
+    span = Span(svc, sid, psid, st, et, load)
     return tid, span
 
 DE_in_log=" "
@@ -114,7 +116,7 @@ min_len_tokens = 4
 svc_kw_idx = -2
 load_kw_idx = -1
 def parse(lines):
-    traces = dict() # key: trace_id, value: spans
+    traces_ = dict() # nested dictionary. key for outer dict: trace_id, key for inner dict: service name, value: Span object
     filtered_lines = list()
     i = 0
     while i < len(lines):
@@ -132,14 +134,14 @@ def parse(lines):
                             i += 1
                             if lines[i+1] == "\n": # or len(lines[i+1]) == 1:
                                 break
-                            tid, span = parse_and_create_span(lines[i], service_name)
-                            if tid not in traces:
-                                traces[tid] = dict()
-                            if service_name not in traces[tid]:
-                                traces[tid][service_name] = span
+                            tid, span = parse_and_create_span(lines[i], service_name, load_per_tick)
+                            if tid not in traces_:
+                                traces_[tid] = dict()
+                            if service_name not in traces_[tid]:
+                                traces_[tid][service_name] = span
                             else:
                                 print_error(service_name + " already exists in trace["+tid+"]")
-                            # print(str(span.span_id) + " is added to " + tid + "len, "+ str(len(traces[tid])))
+                            # print(str(span.span_id) + " is added to " + tid + "len, "+ str(len(traces_[tid])))
                             filtered_lines.append(lines[i])
                     #######################################################
                 except ValueError:
@@ -148,60 +150,142 @@ def parse(lines):
                     print(error)
                     print_error("line: " + lines[i])
         i+=1
-    return filtered_lines, traces
+    return filtered_lines, traces_
 
 # span_to_service_name = dict()
 
-FRONTEND_SVC = "productpage-v1"
-def remove_incomplete_trace(traces):
-    # ret_traces = copy.deepcopy(traces)
-    removed_traces = dict()
-    ret_traces = dict()
-    for tid, spans in traces.items():
-        if FRONTEND_SVC not in spans:
-            # print_log(tid + " does not have " + FRONTEND_SVC + ". Skip this trace")
-            removed_traces[tid] = spans
+FRONTEND_svc = "productpage-v1"
+REVIEW_V1_svc = "reviews-v1"
+REVIEW_V2_svc = "reviews-v2"
+REVIEW_V3_svc = "reviews-v3"
+RATING_svc = "ratings-v1"
+DETAIL_svc = "details-v1"
+# ratings-v1 and reviews-v1 should not exist in the same trace
+min_trace_len = 3
+max_trace_len = 4
+def remove_incomplete_trace(traces_):
+    # ret_traces_ = copy.deepcopy(traces_)
+    input_trace_len = len(traces_)
+    removed_traces_ = dict()
+    what = dict()
+    ret_traces_ = dict()
+    for tid, spans in traces_.items():
+        if FRONTEND_svc not in spans or DETAIL_svc not in spans:
+            removed_traces_[tid] = spans
+        elif len(spans) < min_trace_len:
+            removed_traces_[tid] = spans
+        elif len(spans) > max_trace_len:
+            removed_traces_[tid] = spans
+        elif len(spans) == min_trace_len and (REVIEW_V1_svc not in spans or REVIEW_V2_svc in spans or REVIEW_V3_svc in spans):
+            removed_traces_[tid] = spans
+        elif len(spans) == max_trace_len and REVIEW_V2_svc not in spans and REVIEW_V3_svc not in spans:
+            removed_traces_[tid] = spans
         else:
-            ret_traces[tid] = spans
-    return ret_traces, removed_traces
+            ret_traces_[tid] = spans
     
-def change_to_relative_time(traces):
-    for tid, spans in traces.items():
+    assert input_trace_len == len(ret_traces_) + len(removed_traces_)
+    
+    print("#input trace: " + str(input_trace_len))
+    print("#filtered trace: " + str(len(ret_traces_)))
+    print("#removed_traces trace: " + str(len(removed_traces_)))
+    
+    return ret_traces_, removed_traces_
+    
+def change_to_relative_time(traces_):
+    input_trace_len = len(traces_)
+    for tid, spans in traces_.items():
         try:
-            base_t = spans[FRONTEND_SVC].st
+            base_t = spans[FRONTEND_svc].st
         except Exception as error:
-            # print(tid + " does not have " + FRONTEND_SVC + ". Skip this trace")
-            # for svc, span in spans.items():
+            # print(tid + " does not have " + FRONTEND_svc + ". Skip this trace")
+            # for _, span in spans.items():
             #     span.print()
             print(error)
             exit()
-        for svc_name, span in spans.items():
+        for _, span in spans.items():
             span.st -= base_t
             span.et -= base_t
-    return traces
+            
+    assert input_trace_len == len(traces_)
+    print("#relative t trace: " + str(len(traces)))
+    return traces_
 
-LOG_PATH = "./logs"
+# Using a Python dictionary to act as an adjacency list
+'''
+e.g.,
+{   484fb04e7deab207d8fc0d9d8edc0388 :
+    {
+        {details-v1: d8fc0d9d8edc0388->db1760fc78c58bff,34,36,2,81}, 
+        {productpage-v1: ""->d8fc0d9d8edc0388,0,320,320,96}, 
+        {ratings-v1: 34669d6678cb17c7->3d337444c3d30efc,119,120,1,45}, 
+        {reviews-v2: d8fc0d9d8edc0388->34669d6678cb17c7,113,124,11,25}
+    },
+    ...
+}
+
+graph = {
+  'd8fc0d9d8edc0388(productpage)' : ['34669d6678cb17c7(reviews-v2)','db1760fc78c58bff(details-v1)'],
+  '34669d6678cb17c7(reviews-v2)' : ['34669d6678cb17c7(ratings-v1)'],
+}
+'''
+
+
+# def dfs(visited_, graph_, span_):  #function for dfs 
+#     if node_ not in visited_:
+#         print (node_)
+#         visited_.add(node_)
+#         for neighbour in graph_[node_]:
+#             dfs(visited_, graph_, neighbour)
+                
+def spans_to_graph(spans_):
+    visited = set()
+    graph = dict()
+    # parent_span = spans_[root_svc]
+    for _, parent_span in spans_.items():
+        graph[parent_span] = list() 
+        for _, span in spans_.items():
+            if span not in visited:
+                if span.parent_span_id == parent_span.span_id:
+                    graph[parent_span].append(span)
+                    visited.add(span)
+                    # ASSUMPTION of visited: there is always only one parent service. If one service is a child service of some parent service, there is any other parent service for this child service.
+                    # For example, A->C, B->C is NOT possible.
+        if len(graph[parent_span]) == 0:
+            del graph[parent_span]
+    return graph
+        
+
+def print_graph(graph_):
+    for parent, children in graph_.items():
+        print("parent: " + parent.svc_name + "("+parent.span_id+"), child: " , end="")
+        for child in children:
+            print(child.svc_name + "("+child.span_id+")," , end="")
+        print()
+
+def append_exclusive_time(traces_):
+    for tid, spans in traces_.items():
+        graph = spans_to_graph(spans)
+        print()
+        print("="*10)
+        print_graph(graph)
+        print("="*10)
+    return traces_
+
+LOG_PATH = "./trace_and_load_log.txt"
 
 if __name__ == "__main__":
     print_log("time stitching")
     lines = file_read(LOG_PATH)
-    filtered_lines, original_traces = parse(lines)
-            
-    print("="*50)
-    print("#original trace: " + str(len(original_traces)))
-    
-    filtered_traces, removed_traces = remove_incomplete_trace(original_traces)
-    assert len(original_traces) == len(filtered_traces) + len(removed_traces)
-    print("#filtered trace: " + str(len(filtered_traces)))
-    print("#removed_traces trace: " + str(len(removed_traces)))
-    
-    relative_t_traces = change_to_relative_time(filtered_traces)
-    print("#relative t trace: " + str(len(relative_t_traces)))
-    assert len(relative_t_traces) == len(filtered_traces)
-    
+    filtered_lines, traces = parse(lines)
+    traces, removed_traces = remove_incomplete_trace(traces)
+    traces = change_to_relative_time(traces)
+    traces = append_exclusive_time(traces)
     print("*"*50)
-    for tid, spans in relative_t_traces.items():
+    for tid, spans in traces.items():
         print()
         print("Trace: " + tid)
-        for svc_name, span in spans.items():
+        for _, span in spans.items():
             span.print()
+    
+    print()
+    print("#final valid traces: " + str(len(traces)))
