@@ -33,8 +33,8 @@ import argparse
 
 
 VERBOSITY=1
-intra_cluster_network_rtt = 0.5
-inter_cluster_network_rtt = 40
+intra_cluster_network_rtt = 10
+inter_cluster_network_rtt = 10
 
 """ Trace exampe line
 2
