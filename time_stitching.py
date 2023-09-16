@@ -33,6 +33,8 @@ import argparse
 
 
 VERBOSITY=1
+intra_cluster_network_rtt = 10
+inter_cluster_network_rtt = 10
 
 """ Trace exampe line
 2
@@ -61,7 +63,7 @@ def print_error(msg):
     for i in reversed(range(exit_time)) :
         print("{} seconds...".format(i))
         time.sleep(1)
-    exit()
+    assert False
 
 def stitch_traces():
     return "Not implemented yet"
@@ -73,19 +75,26 @@ def file_read(path_):
 
 
 class Span:
-    def __init__(self, svc, my_span_id, parent_span_id, st, et, load):
+    def __init__(self, svc, my_span_id, parent_span_id, st, et, load, cluster_id):
         self.svc_name = svc
+        self.child_spans = list()
+        self.cluster_id = cluster_id
+        self.name_cid = self.svc_name+"#"+str(self.cluster_id)
+        self.root = (parent_span_id=="")
+        
         self.my_span_id = my_span_id
         self.parent_span_id = parent_span_id
-        self.rt = et - st
+        
+        self.request_size_in_bytes = 10 # parent_span to this span
+        
         self.st = st
         self.et = et
-        self.root = (parent_span_id=="")
-        self.load = load
+        self.rt = et - st
         self.xt = 0
+        self.load = load
     
     def print(self):
-        print("SPAN,{},{}->{},{},{},{},{},{}".format(self.svc_name, self.parent_span_id, self.my_span_id, self.st, self.et, self.rt, self.xt, self.load))
+        print("SPAN,{},{},{}->{},{},{},{},{},{}".format(self.svc_name, self.cluster_id, self.parent_span_id, self.my_span_id, self.st, self.et, self.rt, self.xt, self.load))
 
 # <Trace Id> <Span Id> <Parent Span Id> <Start Time> <End Time>
 # <Parent Span Id> will not exist for the frontend service. e.g., productpage service in bookinfo
@@ -102,40 +111,52 @@ def parse_and_create_span(line, svc, load):
     psid = tokens[2]
     st = int(tokens[3])
     et = int(tokens[4])
-    span = Span(svc, sid, psid, st, et, load)
+    span = Span(svc, sid, psid, st, et, load, -1)
     return tid, span
 
 DE_in_log=" "
 info_kw = "INFO"
 info_kw_idx = 2
-# def is_info_line(line):
-#     if line.split(" ")[info_kw_idx] == info_kw:
-#         return True
-#     return False
-
 min_len_tokens = 4
+
+## New
+# svc_kw_idx = -1
+
+## Old
 svc_kw_idx = -2
 load_kw_idx = -1
+
+NUM_CLUSTER = 2
 def parse(lines):
     traces_ = dict() # nested dictionary. key for outer dict: trace_id, key for inner dict: service name, value: Span object
     filtered_lines = list()
-    i = 0
-    while i < len(lines):
-        sp_line = lines[i].split(DE_in_log)
-        if len(sp_line) >= min_len_tokens:
-            if sp_line[info_kw_idx] == info_kw:
+    idx = 0
+    while idx < len(lines):
+        token = lines[idx].split(DE_in_log)
+        if len(token) >= min_len_tokens:
+            if token[info_kw_idx] == info_kw:
                 try:
-                    load_per_tick = int(sp_line[load_kw_idx])
-                    service_name = sp_line[svc_kw_idx][:-1]
+                    
+                    ####################################################
+                    ## New
+                    # service_name = token[svc_kw_idx][:-2]
+                    # idx += 1 # NOTE: load is in the new line...
+                    # load_per_tick = int(lines[idx])
+                    # print("service_name,{}, load_per_tick,{}".format(service_name, load_per_tick))
+                    
+                    ## Old
+                    load_token = lines[idx].split(DE_in_log)
+                    load_per_tick = int(token[load_kw_idx])
+                    service_name = token[svc_kw_idx][:-1]
                     #######################################################
                     if load_per_tick > 0:
                         print_log("svc name," + service_name + ", load per tick," + str(load_per_tick))
-                        filtered_lines.append(lines[i])
+                        filtered_lines.append(lines[idx])
                         while True:
-                            i += 1
-                            if lines[i+1] == "\n": # or len(lines[i+1]) == 1:
+                            idx += 1
+                            if lines[idx+1] == "\n": # or len(lines[i+1]) == 1:
                                 break
-                            tid, span = parse_and_create_span(lines[i], service_name, load_per_tick)
+                            tid, span = parse_and_create_span(lines[idx], service_name, load_per_tick)
                             if tid not in traces_:
                                 traces_[tid] = dict()
                             if service_name not in traces_[tid]:
@@ -143,17 +164,16 @@ def parse(lines):
                             else:
                                 print_error(service_name + " already exists in trace["+tid+"]")
                             # print(str(span.my_span_id) + " is added to " + tid + "len, "+ str(len(traces_[tid])))
-                            filtered_lines.append(lines[i])
+                            filtered_lines.append(lines[idx])
                     #######################################################
                 except ValueError:
-                    print_error("sp_line["+str(load_kw_idx)+"]: " + sp_line[load_kw_idx] + " is not integer..?\nline: "+lines[i])
+                    print_error("token["+str(load_kw_idx)+"]: " + token[load_kw_idx] + " is not integer..?\nline: "+lines[idx])
                 except Exception as error:
                     print(error)
-                    print_error("line: " + lines[i])
-        i+=1
+                    print_error("line: " + lines[idx])
+        idx+=1
     return filtered_lines, traces_
 
-# span_to_service_name = dict()
 
 FRONTEND_svc = "productpage-v1"
 span_id_of_FRONTEND_svc = ""
@@ -163,8 +183,12 @@ REVIEW_V3_svc = "reviews-v3"
 RATING_svc = "ratings-v1"
 DETAIL_svc = "details-v1"
 # ratings-v1 and reviews-v1 should not exist in the same trace
-min_trace_len = 3
-max_trace_len = 4
+MIN_TRACE_LEN = 3
+MAX_TRACE_LEN = 4
+###############################
+FILTER_REVIEW_V1 = True # False
+FILTER_REVIEW_V3 = True # False
+###############################
 def remove_incomplete_trace(traces_):
     # ret_traces_ = copy.deepcopy(traces_)
     input_trace_len = len(traces_)
@@ -175,17 +199,27 @@ def remove_incomplete_trace(traces_):
     for tid, spans in traces_.items():
         if FRONTEND_svc not in spans or DETAIL_svc not in spans:
             removed_traces_[tid] = spans
-        elif len(spans) < min_trace_len:
+        elif len(spans) < MIN_TRACE_LEN:
             removed_traces_[tid] = spans
-        elif len(spans) > max_trace_len:
+        elif len(spans) > MAX_TRACE_LEN:
             removed_traces_[tid] = spans
-        elif len(spans) == min_trace_len and (REVIEW_V1_svc not in spans or REVIEW_V2_svc in spans or REVIEW_V3_svc in spans):
+        elif len(spans) == MIN_TRACE_LEN and (REVIEW_V1_svc not in spans or REVIEW_V2_svc in spans or REVIEW_V3_svc in spans):
             removed_traces_[tid] = spans
-        elif len(spans) == max_trace_len and REVIEW_V2_svc not in spans and REVIEW_V3_svc not in spans:
+        elif len(spans) == MAX_TRACE_LEN and REVIEW_V2_svc not in spans and REVIEW_V3_svc not in spans:
             removed_traces_[tid] = spans
         elif spans[FRONTEND_svc].parent_span_id != span_id_of_FRONTEND_svc:
             removed_traces_[tid] = spans
             weird_span_id += 1
+        elif FILTER_REVIEW_V1 and REVIEW_V1_svc in spans:
+            if len(spans) != 3:
+                print_spans(spans)
+            assert len(spans) == 3
+            removed_traces_[tid] = spans
+        elif FILTER_REVIEW_V3 and REVIEW_V3_svc in spans:
+            if len(spans) != 4:
+                print_spans(spans)
+            assert len(spans) == 4
+            removed_traces_[tid] = spans
         else:
             ret_traces_[tid] = spans
     print("weird_span_id: ", weird_span_id)
@@ -196,7 +230,17 @@ def remove_incomplete_trace(traces_):
     print("#removed_traces trace: " + str(len(removed_traces_)))
     
     return ret_traces_, removed_traces_
-    
+
+
+def append_arbitrary_cluster_id_to_spans(traces_):
+    i = 0 # NOTE: idx i will be used to give arbitrary cluster id to each span
+    for _, spans in traces_.items():
+        cluster_id = i%NUM_CLUSTER
+        i += 1
+        for _, span in spans.items():
+            span.cluster_id = cluster_id
+    return traces_
+
 def change_to_relative_time(traces_):
     input_trace_len = len(traces_)
     for tid, spans in traces_.items():
@@ -213,44 +257,19 @@ def change_to_relative_time(traces_):
             span.et -= base_t
             
     assert input_trace_len == len(traces_)
-    print("#relative t trace: " + str(len(traces)))
+    print("#relative t trace: " + str(len(traces_)))
     return traces_
 
-# Using a Python dictionary to act as an adjacency list
-'''
-e.g.,
-{   484fb04e7deab207d8fc0d9d8edc0388 :
-    {
-        {details-v1: d8fc0d9d8edc0388->db1760fc78c58bff,34,36,2,81}, 
-        {productpage-v1: ""->d8fc0d9d8edc0388,0,320,320,96}, 
-        {ratings-v1: 34669d6678cb17c7->3d337444c3d30efc,119,120,1,45}, 
-        {reviews-v2: d8fc0d9d8edc0388->34669d6678cb17c7,113,124,11,25}
-    },
-    ...
-}
 
-graph = {
-  'd8fc0d9d8edc0388(productpage)' : ['34669d6678cb17c7(reviews-v2)','db1760fc78c58bff(details-v1)'],
-  '34669d6678cb17c7(reviews-v2)' : ['34669d6678cb17c7(ratings-v1)'],
-}
-'''
+def print_spans(spans_):
+    for _, span in spans_.items():
+        span.print()
 
-
-# def dfs(visited_, graph_, span_):  #function for dfs 
-#     if node_ not in visited_:
-#         print (node_)
-#         visited_.add(node_)
-#         for neighbour in graph_[node_]:
-#             dfs(visited_, graph_, neighbour)
-
-
-def print_graph(graph_):
-    for parent, children in graph_.items():
-        print("parent: " + parent.svc_name + "("+parent.my_span_id+"), child: " , end="")
-        for child in children:
-            print(child.svc_name + "("+child.my_span_id+")," , end="")
-        print()
-
+def print_dag(single_dag_):
+    for parent_span, children in single_dag_.items():
+        for child_span in children:
+            print("{}({})->{}({})".format(parent_span.svc_name, parent_span.my_span_id, child_span.svc_name, child_span.my_span_id))
+            
 '''
 parallel-1
     ----------------------A
@@ -278,25 +297,23 @@ def is_parallel_execution(span_a, span_b):
         return 0
                 
 def spans_to_graph_and_calc_exclusive_time(spans_):
-    visited = set()
-    graph = dict()
+    # visited = set()
+    single_dag = dict()
     # parent_span = spans_[root_svc]
     for _, parent_span in spans_.items():
-        graph[parent_span] = list()
-        max_child_rt = 0
+        single_dag[parent_span] = list()
         child_spans = list()
         for _, span in spans_.items():
             # if span not in visited: # visited is redundant currently.
             if span.parent_span_id == parent_span.my_span_id:
                 child_spans.append(span)
-                graph[parent_span].append(span)
+                single_dag[parent_span].append(span)
                     # visited.add(span)
                     # NOTE: ASSUMPTION of visited: there is always only one parent service. If one service is a child service of some parent service, there is any other parent service for this child service.
                     # For example, A->C, B->C is NOT possible.
         # exhaustive search
         if len(child_spans) == 0:
             continue
-        
         exclude_child_rt = 0
         if  len(child_spans) == 1:
             print("parent: {}, child_1: {}, child_2: None, single child".format(parent_span.svc_name, child_spans[0].svc_name))
@@ -320,35 +337,89 @@ def spans_to_graph_and_calc_exclusive_time(spans_):
             for span in child_spans:
                 span.print()
             print_error("parent_span exclusive time cannot be negative value: {}".format(parent_span.xt))
-        if len(graph[parent_span]) == 0:
-            del graph[parent_span]
-    return graph
+        if len(single_dag[parent_span]) == 0:
+            del single_dag[parent_span]
+    return single_dag
+
 
 def traces_to_graphs_and_calc_exclusive_time(traces_):
-    graphs = dict()
+    graph_dict = dict()
     for tid, spans in traces_.items():
-        g_ = spans_to_graph_and_calc_exclusive_time(spans)
-        graphs[tid] = g_
-    return graphs
+        single_dag = spans_to_graph_and_calc_exclusive_time(spans)
+        graph_dict[tid] = single_dag
+    return graph_dict
 
 
-LOG_PATH = "./trace_and_load_log.txt"
-if __name__ == "__main__":
-    print_log("time stitching")
-    lines = file_read(LOG_PATH)
+# def add_child_services(traces_, graph_dict_):
+def add_child_services(graph_dict_):
+    for tid in graph_dict_:
+        # spans = traces_[tid] # { svc_name: span }
+        dag = graph_dict_[tid] # { parent_span: list of child spans }
+        for parent_span, children in dag.items():
+            for child_span in children:
+                # spans[parent_span.svc_name].child_spans.append(child_span)
+                parent_span.child_spans.append(child_span)
+                # print("parent: {} adds child: {}".format(parent_span.svc_name, child_span.svc_name))
+
+def get_unique_dag_list(graph_dict_):
+    unique_dags = dict()
+    for _, dag in graph_dict_.items():
+        temp_list = list()
+        for parent_span, children in dag.items():
+            for child_span in children:
+                temp_list.append((parent_span.svc_name + "," + child_span.svc_name))
+        temp_list.sort()
+        temp_str = ""
+        for elem in temp_list:
+            temp_str += elem + ","
+        if temp_str not in unique_dags:
+            unique_dags[temp_str] = dag
+    print(" --- unique dag list --- ")
+    i = 0
+    for _, dag in unique_dags.items():
+        print("unique dag #"+str(i))
+        print_dag(dag)
+        i += 1
+    return unique_dags
+
+def get_unique_svc_names_from_dag(dag_):
+    unique_svc_names = dict()
+    for parent_span, children in dag_.items():
+        for child_span in children:
+            unique_svc_names[parent_span.svc_name] = "xxxx"
+            unique_svc_names[child_span.svc_name] = "xxxx"
+    return unique_svc_names
+
+def stitch_time(log_path):
+    print_log("time stitching starts")
     
+    lines = file_read(log_path)
     filtered_lines, traces = parse(lines)
     traces, removed_traces = remove_incomplete_trace(traces)
+    traces = append_arbitrary_cluster_id_to_spans(traces)
     traces = change_to_relative_time(traces)
-    graphs = traces_to_graphs_and_calc_exclusive_time(traces)
+    graph_dict = traces_to_graphs_and_calc_exclusive_time(traces)
+    unique_dags = get_unique_dag_list(graph_dict)
+    # traces = add_child_services(traces, graph_dict)
+    add_child_services(graph_dict)
     
     print("*"*50)
     for tid, spans in traces.items():
         print("="*30)
         print("Trace: " + tid)
-        print_graph(graphs[tid])
+        print_dag(graph_dict[tid])
         for _, span in spans.items():
             span.print()
         print("="*30)
     print()
     print("#final valid traces: " + str(len(traces)))
+    
+    print_log("time stitching done")
+    return traces, graph_dict, unique_dags
+
+# LOG_PATH = "./call-logs-sept-13.txt"
+# LOG_PATH = "./trace_and_load_log.txt"
+LOG_PATH = "./modified_trace_and_load_log.txt"
+
+if __name__ == "__main__":
+    traces, graph_dict, unique_dags = stitch_time(LOG_PATH)
