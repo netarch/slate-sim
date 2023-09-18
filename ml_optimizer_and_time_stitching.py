@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 # coding: utf-8
 
+# In[31]:
 import sys
 sys.dont_write_bytecode = True
 
@@ -25,6 +26,7 @@ from gurobi_ml import add_predictor_constr
 import matplotlib.pyplot as plt
 import argparse
 from pprint import pprint
+from IPython.display import display
 
 import time_stitching as tst
 
@@ -119,7 +121,7 @@ if flags.NUM_REQUEST == None:
     flags.NUM_REQUEST = list()
     # for _ in range(flags.NUM_CLUSTER):)
     flags.NUM_REQUEST.append(100)
-    flags.NUM_REQUEST.append(100)
+    flags.NUM_REQUEST.append(1000)
 
 # In[31]:
 
@@ -129,16 +131,46 @@ if flags.NUM_REQUEST == None:
 traces, graph_dict, unique_dags = tst.stitch_time(tst.LOG_PATH)
 
 
+
+
 # In[32]:
 
 
-assert len(unique_dags) == 1
-unique_services = dict()
-only_one_unique_dag = dict()
+print("print dags")
 for _, dag in unique_dags.items():
     tst.print_dag(dag)
     only_one_unique_dag = dag
-    unique_services = list(tst.get_unique_svc_names_from_dag(dag).keys())
+    
+assert len(unique_dags) == 1
+unique_services = dict()
+    
+    
+# In[33]:
+    
+tst.print_dag(only_one_unique_dag)
+print()
+
+INGRESS_GW_NAME = "ingress_gw"
+
+ENTRANCE = tst.FRONTEND_svc
+# ENTRANCE = INGRESS_GW_NAME
+SAME_COMPUTE_TIME = True
+LOAD_IN = True
+ALL_PRODUCTPAGE=False
+REAL_DATA=False
+
+if ENTRANCE == INGRESS_GW_NAME:
+    ingress_span_cluster_0 = tst.Span(INGRESS_GW_NAME, 0, 0, 0, 10, 0, 0)
+    only_one_unique_dag[ingress_span_cluster_0] = list()
+    for parent_span, children in only_one_unique_dag.items():
+        if parent_span.svc_name == tst.FRONTEND_svc:
+            only_one_unique_dag[ingress_span_cluster_0].append(parent_span)
+    
+print("only_one_unique_dag")
+tst.print_dag(only_one_unique_dag)
+    
+# In[32]:
+unique_services = list(tst.get_unique_svc_names_from_dag(only_one_unique_dag).keys())
 unique_services
 
 
@@ -206,30 +238,50 @@ for parent_span, children in only_one_unique_dag.items():
     if len(children) == 0: # leaf service
         print(parent_span.svc_name + " is leaf service")
         for src_cid in range(flags.NUM_CLUSTER):
-            var_name = spans_to_network_arc_var_name(parent_span.svc_name, src_cid, destination_name, "*")
-            if var_name not in network_arc_var_name:
-                network_arc_var_name[var_name] = 0
+            tuple_var_name = spans_to_network_arc_var_name(parent_span.svc_name, src_cid, destination_name, "*")
+            if tuple_var_name not in network_arc_var_name:
+                network_arc_var_name[tuple_var_name] = 0
     for child_span in children:
-        if parent_span.svc_name == tst.FRONTEND_svc:
+        ##################################################
+        # if parent_span.svc_name == tst.FRONTEND_svc:
+        # if parent_span.svc_name == INGRESS_GW_NAME:
+        if parent_span.svc_name == ENTRANCE:
+        ##################################################
             # src to frontend service
             for src_cid in range(flags.NUM_CLUSTER):
-                var_name = spans_to_network_arc_var_name(source_name, "*", parent_span.svc_name, src_cid)
-                if var_name not in network_arc_var_name:
-                    network_arc_var_name[var_name] = parent_span.request_size_in_bytes
+                tuple_var_name = spans_to_network_arc_var_name(source_name, "*", parent_span.svc_name, src_cid)
+                if tuple_var_name not in network_arc_var_name:
+                    network_arc_var_name[tuple_var_name] = parent_span.request_size_in_bytes
                 # frontend to service
                 for dst_cid in range(flags.NUM_CLUSTER):
-                    var_name = spans_to_network_arc_var_name(parent_span.svc_name, src_cid, child_span.svc_name, dst_cid)
-                    if var_name not in network_arc_var_name:
-                        network_arc_var_name[var_name] = child_span.request_size_in_bytes
+                    tuple_var_name = spans_to_network_arc_var_name(parent_span.svc_name, src_cid, child_span.svc_name, dst_cid)
+                    if tuple_var_name not in network_arc_var_name:
+                        network_arc_var_name[tuple_var_name] = child_span.request_size_in_bytes
         # service to service
         else:
             for src_cid in range(flags.NUM_CLUSTER):
                 for dst_cid in range(flags.NUM_CLUSTER):
-                    var_name = spans_to_network_arc_var_name(parent_span.svc_name, src_cid, child_span.svc_name, dst_cid)
-                    if var_name not in network_arc_var_name:
-                        network_arc_var_name[var_name] = child_span.request_size_in_bytes
+                    tuple_var_name = spans_to_network_arc_var_name(parent_span.svc_name, src_cid, child_span.svc_name, dst_cid)
+                    if tuple_var_name not in network_arc_var_name:
+                        network_arc_var_name[tuple_var_name] = child_span.request_size_in_bytes
+print("len(network_arc_var_name)")
 print(len(network_arc_var_name))
-assert len(network_arc_var_name) == 18 # bookinfo, two cluster set up
+for tuple_var_name, _ in network_arc_var_name.items():
+    print(tuple_var_name)
+
+if ENTRANCE == tst.FRONTEND_svc:
+    if tst.REVIEW_V1_svc in unique_services:
+        assert len(network_arc_var_name) == 14 # bookinfo, without ingress gw, two cluster set up
+    else:
+        assert len(network_arc_var_name) == 18 # bookinfo, without ingress gw, two cluster set up
+elif ENTRANCE == INGRESS_GW_NAME:
+    if tst.REVIEW_V1_svc in unique_services:
+        assert len(network_arc_var_name) == 18 # bookinfo, with ingress gw, two cluster set up
+    else:
+        assert len(network_arc_var_name) == 22 # bookinfo, with ingress gw, two cluster set up
+else:
+    assert False
+
 
 def check_network_arc_var_name(net_arc_var_n):
     for (src, dst), _ in net_arc_var_n.items():
@@ -264,8 +316,6 @@ print(len(traces) * len(unique_services))
 # In[37]:
 
 
-true_function_degree = 1 # 1: linear, >2: polynomial
-regressor_degree = flags.regressor_degree # 1: linear, >2: polynomial
 
 load = list()
 compute_time = list()
@@ -273,27 +323,59 @@ service_name_ = list()
 index_ = list()
 cid_list = list()
 
+regressor_degree = 2 # 1: linear, >2: polynomial
+
 ############################
 ## NOTE: Cluster id is arbitrary for now 
 ############################
-SAME_COMPUTE_TIME = True
-if SAME_COMPUTE_TIME:
-    for tid, spans in traces.items():
-        for svc_name, span in spans.items():
-            for cid in range(flags.NUM_CLUSTER):
+if REAL_DATA:
+    if SAME_COMPUTE_TIME:
+        for tid, spans in traces.items():
+            for svc_name, span in spans.items():
+                for cid in range(flags.NUM_CLUSTER):
+                    load.append(span.load)
+                    compute_time.append(span.xt)
+                    index_.append(span_to_compute_arc_var_name(span.svc_name, cid))
+                    service_name_.append(span.svc_name)
+                    cid_list.append(cid)
+                    ## Adding fake ingress gw latency/load data, same as frontend service
+                    if ENTRANCE == INGRESS_GW_NAME:
+                        if span.svc_name == tst.FRONTEND_svc:
+                            print("add ingress gw observation")
+                            load.append(span.load) ## will not be used
+                            compute_time.append(span.xt) ## will not be used
+                            index_.append(span_to_compute_arc_var_name(ENTRANCE, span.cluster_id))
+                            service_name_.append(ENTRANCE)
+                            cid_list.append(span.cluster_id)
+    else:
+        for tid, spans in traces.items():
+            for svc_name, span in spans.items():
                 load.append(span.load)
                 compute_time.append(span.xt)
-                index_.append(span_to_compute_arc_var_name(span.svc_name, cid))
+                index_.append(span_to_compute_arc_var_name(span.svc_name, span.cluster_id))
                 service_name_.append(span.svc_name)
-                cid_list.append(cid)
+                cid_list.append(span.cluster_id)
+                ## Adding fake ingress gw latency/load data, same as frontend service
+                if ENTRANCE == INGRESS_GW_NAME:
+                    if span.svc_name == tst.FRONTEND_svc:
+                        print("add ingress gw observation")
+                        load.append(span.load) ## will not be used
+                        compute_time.append(span.xt) ## will not be used
+                        index_.append(span_to_compute_arc_var_name(ENTRANCE, span.cluster_id))
+                        service_name_.append(ENTRANCE)
+                        cid_list.append(span.cluster_id)
 else:
-    for tid, spans in traces.items():
-        for svc_name, span in spans.items():
-            load.append(span.load)
-            compute_time.append(span.xt)
-            index_.append(span_to_compute_arc_var_name(span.svc_name, span.cluster_id))
-            service_name_.append(span.svc_name)
-            cid_list.append(span.cluster_id)
+    num_data_point = 100
+    for cid in range(flags.NUM_CLUSTER):
+        for svc_name in unique_services:
+            load += list(np.arange(0,num_data_point))
+            for j in range(num_data_point):
+                service_name_.append(svc_name)
+                slope = 5
+                intercept = 10
+                compute_time.append(pow(load[j],regressor_degree)*slope + intercept)
+                cid_list.append(cid)
+                index_.append(span_to_compute_arc_var_name(svc_name, cid))
 
 compute_time_observation = pd.DataFrame(
     data={
@@ -307,6 +389,8 @@ compute_time_observation = pd.DataFrame(
 # with pd.option_context('display.max_rows', None):
 print(compute_time_observation[(compute_time_observation["service_name"]=="details-v1") & (compute_time_observation["cluster_id"]==0)])
 print(compute_time_observation[(compute_time_observation["service_name"]=="details-v1") & (compute_time_observation["cluster_id"]==1)])
+with pd.option_context('display.max_rows', None):
+    display(compute_time_observation)
 
 
 # In[38]:
@@ -315,7 +399,7 @@ print(compute_time_observation[(compute_time_observation["service_name"]=="detai
 ## Per-service load-to-compute time modeling.
 idx = 0
 num_subplot_row = 2
-num_subplot_col = 4
+num_subplot_col = 5
 fig, (plot_list) = plt.subplots(num_subplot_row, num_subplot_col, figsize=(12,6))
 fig.tight_layout()
 
@@ -328,15 +412,28 @@ for cid in range(flags.NUM_CLUSTER):
     for svc_name in unique_services:
         temp_df = cid_df[cid_df["service_name"] == svc_name]
         frontend_temp_df = cid_df[cid_df["service_name"] == tst.FRONTEND_svc]
-        
-        X = frontend_temp_df[["load"]]
-        X.index = temp_df.index
-        y = frontend_temp_df["compute_time"]
-        y.index = temp_df.index
+        if ALL_PRODUCTPAGE:
+            X = frontend_temp_df[["load"]]
+            X.index = temp_df.index
+            y = frontend_temp_df["compute_time"]
+            y.index = temp_df.index
+        else:
+            X = temp_df[["load"]]
+            y = temp_df["compute_time"]
         # print()
         # print("svc_name:", svc_name)
         # display(X)
         # display(y)
+        # print()
+        
+        temp_x = X.copy()
+        # for ind in temp_x.index:
+            # temp_x["load"][ind] = 1
+        for i in range(len(temp_x)):
+            temp_x.iloc[i, 0] = i*5
+        print("svc_name:", svc_name)
+        display(temp_x)
+        display(X)
         
         #############################################
         # max_load[svc_name] = max(X["load"])+100
@@ -346,11 +443,11 @@ for cid in range(flags.NUM_CLUSTER):
         #############################################
         
         X_train, X_test, y_train, y_test = train_test_split(
-            X, y, train_size=0.8, random_state=1
+            X, y, train_size=0.95, random_state=1
         )
         feat_transform = make_column_transformer(
-            (StandardScaler(), ["load"]),
-            # ("passthrough", ["load"]),
+            # (StandardScaler(), ["load"]),
+            ("passthrough", ["load"]),
             verbose_feature_names_out=False,
             remainder='drop'
         )
@@ -373,7 +470,8 @@ for cid in range(flags.NUM_CLUSTER):
         # plot_list[row_idx][col_idx].plot(X["load"], y, 'ro', label="observation", alpha=0.2)
         # plot_list[row_idx][col_idx].plot(X["load"], regressor_dict[svc_name].predict(X), 'b.', label="prediction", alpha=0.2)
         plot_list[row_idx][col_idx].plot(X, y, 'ro', label="observation", alpha=0.2)
-        plot_list[row_idx][col_idx].plot(X, regressor_dict[svc_name].predict(X), 'b', label="prediction", alpha=0.5)
+        plot_list[row_idx][col_idx].plot(X, regressor_dict[svc_name].predict(X), 'b.', label="prediction", alpha=0.5)
+        plot_list[row_idx][col_idx].plot(temp_x, regressor_dict[svc_name].predict(temp_x), 'go', label="prediction", alpha=0.5)
         
         plot_list[row_idx][col_idx].legend()
         plot_list[row_idx][col_idx].set_title("Service " + svc_name)
@@ -548,7 +646,8 @@ network_latency_data = pd.DataFrame(
 )
 LOG_TIMESTAMP("creating egress cost and compute/network latency dataframe")
 
-network_latency_data
+print("network_latency_data")
+print(network_latency_data)
 
 
 # In[44]:
@@ -566,7 +665,7 @@ for svc_name in unique_services:
     # compute_load[svc_name] = gppd.add_vars(model, compute_time_data[svc_name], name="load_for_compute_edge", lb="min_load", ub="max_load")
     compute_time[svc_name] = gppd.add_vars(model, compute_time_data[svc_name], name="compute_time")
     compute_load[svc_name] = gppd.add_vars(model, compute_time_data[svc_name], name="load_for_compute_edge")
-# model.update()
+model.update()
 
 m_feats = dict()
 idx = 0
@@ -581,19 +680,19 @@ for svc_name in unique_services:
     if idx == 0:
         pred_constr.print_stats()
     idx += 1
-# model.update()
+model.update()
 
 network_latency = gppd.add_vars(model, network_latency_data, name="network_latency", lb="min_network_latency", ub="max_network_latency")
 # network_load = gppd.add_vars(model, network_latency_data, name="load_for_network_edge", lb="min_load", ub="max_load")
 network_load = gppd.add_vars(model, network_latency_data, name="load_for_network_edge")
-# model.update()
+model.update()
 
 network_egress_cost = gppd.add_vars(model, network_egress_cost_data, name="network_egress_cost", lb="min_network_egress_cost", ub="max_network_egress_cost")
 
 compute_egress_cost = dict()
 for svc_name in unique_services:
     compute_egress_cost[svc_name] = gppd.add_vars(model, compute_egress_cost_data[svc_name], name="compute_egress_cost", lb="min_compute_egress_cost", ub="max_compute_egress_cost")
-# model.update()
+model.update()
 
 # egress cost sum
 network_egress_cost_sum = sum(network_egress_cost.multiply(network_load))
@@ -604,8 +703,13 @@ print_log("total_egress_sum: ", total_egress_sum)
 
 # total latency sum
 network_latency_sum = sum(network_latency.multiply(network_load))
+print("network_latency_sum")
+print(network_latency_sum)
+print()
 for svc_name in unique_services:
     compute_latency_sum = sum(compute_time[svc_name].multiply(m_feats[svc_name]["load"])) # m_feats[svc_name]["load"] is identical to compute_load[svc_name]
+    print("compute_latency_sum, ", svc_name)
+    display(compute_latency_sum)
 total_latency_sum = network_latency_sum + compute_latency_sum
 print_log("\ntotal_latency_sum: ", total_latency_sum)
 
@@ -665,22 +769,28 @@ src_flow = model.addConstrs((gp.quicksum(aggregated_load.select(src, '*')) == so
 
 ####################################################################
 # * to frontend services start node
-for cid in range(flags.NUM_CLUSTER):
-    start_node = tst.FRONTEND_svc + DELIMITER + str(cid) + DELIMITER + "start"
-    end_node = tst.FRONTEND_svc + DELIMITER + str(cid) + DELIMITER + "end"
-    per_cluster_load_in = model.addConstr((gp.quicksum(aggregated_load.select('*', start_node)) == flags.NUM_REQUEST[cid]), name="cluster_"+str(cid)+"_load_in")
+if LOAD_IN == True:
+    for cid in range(flags.NUM_CLUSTER):
+        #############################################################################
+        # start_node = tst.FRONTEND_svc + DELIMITER + str(cid) + DELIMITER + "start"
+        # end_node = tst.FRONTEND_svc + DELIMITER + str(cid) + DELIMITER + "end"
+        start_node = ENTRANCE + DELIMITER + str(cid) + DELIMITER + "start"
+        # end_node = INGRESS_GW_NAME + DELIMITER + str(cid) + DELIMITER + "end"
+        #############################################################################
+        
+        per_cluster_load_in = model.addConstr((gp.quicksum(aggregated_load.select('*', start_node)) == flags.NUM_REQUEST[cid]), name="cluster_"+str(cid)+"_load_in")
+
+# if ENTRANCE == INGRESS_GW_NAME:
+#     # # frontend services end node to child nodes
+#     for cid in range(flags.NUM_CLUSTER):
+#         ##################################
+#         # start_node = tst.FRONTEND_svc + DELIMITER + str(cid) + DELIMITER + "start"
+#         # end_node = tst.FRONTEND_svc + DELIMITER + str(cid) + DELIMITER + "end"
+#         # start_node = INGRESS_GW_NAME + DELIMITER + str(cid) + DELIMITER + "start"
+#         end_node = ENTRANCE + DELIMITER + str(cid) + DELIMITER + "end"
+#         ##################################
+#         per_cluster_load_out = model.addConstr((gp.quicksum(aggregated_load.select(end_node, '*')) == flags.NUM_REQUEST[cid]), name="cluster_"+str(cid)+"_load_out")
     
-# # frontend services end node to child nodes
-# for cid in range(flags.NUM_CLUSTER):
-#     start_node = tst.FRONTEND_svc + DELIMITER + str(cid) + DELIMITER + "start"
-#     end_node = tst.FRONTEND_svc + DELIMITER + str(cid) + DELIMITER + "end"
-#     per_cluster_load_out = model.addConstr((gp.quicksum(aggregated_load.select(end_node, '*')) == flags.NUM_REQUEST[cid]), name="cluster_"+str(cid)+"_load_out")
-    
-    
-    print_log("start_node: " + start_node)
-    print_log("gp.quicksum(aggregated_load.select('*', start_node)):", gp.quicksum(aggregated_load.select('*', start_node)))
-    print_log("end_node: " + end_node)
-    print("flags.NUM_REQUEST[cid]: "+ str(flags.NUM_REQUEST[cid]))
 ####################################################################
 
 model.update()
@@ -701,6 +811,7 @@ for parent_span, children in only_one_unique_dag.items():
 num_leaf_services = len(leaf_services)
 print_log("leaf_services: ", leaf_services)
 print_log("num_leaf_services: ", num_leaf_services)
+
 dst_flow = model.addConstrs((gp.quicksum(aggregated_load.select('*', dst)) == destination[dst]*num_leaf_services for dst in dest_keys), name="destination")
 model.update()
 
@@ -724,7 +835,7 @@ for parent_span, children in only_one_unique_dag.items():
 
 # case 2 (end&non-leaf node): incoming num requests == outgoing num request for all nodes
 for parent_span, children in only_one_unique_dag.items():
-    if len(children) > 0: # leaf_services:
+    if len(children) > 0: # non-leaf services:
         for parent_cid in range(flags.NUM_CLUSTER):
             end_node = parent_span.svc_name + DELIMITER + str(parent_cid) + DELIMITER + "end"
             for child_span in children:
@@ -735,8 +846,8 @@ for parent_span, children in only_one_unique_dag.items():
                     child_list.append(child_start_node)
                     out_sum += aggregated_load.sum(end_node, child_start_node)
                 node_flow = model.addConstr((gp.quicksum(aggregated_load.select('*', end_node)) == out_sum), name="flow_conservation["+end_node+"]-nonleaf_endnode")
-                # print("nonleaf end_node flow conservation")
-                # print(end_node, child_list)
+                print("nonleaf end_node flow conservation")
+                print(end_node, child_list)
 model.update()
 
 
@@ -746,7 +857,10 @@ model.update()
 ###################################################
 # Constraint 4: Tree topology
 for svc_name in unique_services:
-    if svc_name != tst.FRONTEND_svc:
+    #####################################
+    # if svc_name != tst.FRONTEND_svc:
+    if svc_name != ENTRANCE:
+    #####################################
         sum_ = 0
         for cid in range(flags.NUM_CLUSTER):
             node_name = svc_name +DELIMITER + str(cid) + DELIMITER+"start"
@@ -772,14 +886,18 @@ varInfo = [(v.varName, v.LB, v.UB) for v in model.getVars() ]
 df_var = pd.DataFrame(varInfo) # convert to pandas dataframe
 df_var.columns=['Variable Name','LB','UB'] # Add column headers
 df_var.to_csv(OUTPUT_DIR+datetime.datetime.now().strftime("%Y%m%d_%H:%M:%S") +"-variable.csv")
-df_var
+with pd.option_context('display.max_colwidth', None):
+    with pd.option_context('display.max_rows', None):
+        display(df_var)
 
 
 constrInfo = [(c.constrName, model.getRow(c), c.Sense, c.RHS) for c in model.getConstrs() ]
 df_constr = pd.DataFrame(constrInfo)
 df_constr.columns=['Constraint Name','Constraint equation', 'Sense','RHS']
 df_constr.to_csv(OUTPUT_DIR+datetime.datetime.now().strftime("%Y%m%d_%H:%M:%S") +"-constraint.csv")
-df_constr
+with pd.option_context('display.max_colwidth', None):
+    with pd.option_context('display.max_rows', None):
+        display(df_constr)
 
 
 # In[51]:
@@ -789,7 +907,30 @@ df_constr
 model.setParam('NonConvex', 2)
 solve_start_time = time.time()
 model.update()
+#########################################################
+# option 1
+#with gp.Env(params=options) as env, gp.Model(env=env) as model:
+#    # Formulate problem
+#    model.optimize()
+
+# option 2 # it requires gurobi.lic file
+# Where should we store the gurobi.lic file?
+# - https://support.gurobi.com/hc/en-us/articles/360013417211
+# How can we use gurobi WLS license?
+# - https://support.gurobi.com/hc/en-us/articles/13232844297489-How-do-I-set-up-a-Web-License-Service-WLS-client-license-
+
+options = {
+    "WLSACCESSID": "550eb070-b4aa-491d-b81e-38edc474fa10",
+    "WLSSECRET": "aea5168e-aa53-44e6-a8f0-8676d3ecc701",
+    "LICENSEID": 2415150,
+}
+env = gp.Env(params=options)
+gp.Model(env=env)
 model.optimize()
+
+# option 3
+#model.optimize()
+#########################################################
 solve_end_time = time.time()
 LOG_TIMESTAMP("MODEL OPTIMIZE")
 
@@ -811,7 +952,7 @@ LOG_TIMESTAMP("get var and constraint")
 
 print("model.Status: ", model.Status)
 
-if model.Status == GRB.INFEASIBLE:
+if model.Status != GRB.OPTIMAL:
     print("XXXXXXXXXXXXXXXXXXXXXXXXXXX")
     print("XXXX INFEASIBLE MODEL! XXXX")
     print("XXXXXXXXXXXXXXXXXXXXXXXXXXX")
@@ -954,3 +1095,5 @@ if GRAPHVIZ and model.Status == GRB.OPTIMAL:
     g_.render(OUTPUT_DIR + now.strftime("%Y%m%d_%H:%M:%S") + "_" + app_name+ '_call_graph', view = True) # output: call_graph.pdf
     g_
 
+
+# %%

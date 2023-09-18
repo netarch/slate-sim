@@ -1,42 +1,19 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-import sys
-sys.dont_write_bytecode = True
-
 import time
-import numpy as np  
-import pandas as pd
-import datetime
-import graphviz
-import gurobipy as gp
-from gurobipy import GRB
-import copy
 from pprint import pprint
 
-sys.path.append("simulator")
-from simulator import simulator as sim
-
-import random
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import OneHotEncoder
-from sklearn.preprocessing import StandardScaler
-from sklearn.compose import make_column_transformer
-from sklearn.linear_model import LinearRegression
-from sklearn.preprocessing import PolynomialFeatures
-from sklearn.pipeline import make_pipeline
-from sklearn.metrics import r2_score
-import gurobipy_pandas as gppd
-from gurobi_ml import add_predictor_constr
-import matplotlib.pyplot as plt
-import argparse
-
+# LOG_PATH = "./call-logs-sept-13.txt"
+# LOG_PATH = "./trace_and_load_log.txt"
+LOG_PATH = "./modified_trace_and_load_log.txt"
+# LOG_PATH = "./call-logs-sept-16.txt"
 
 VERBOSITY=1
-intra_cluster_network_rtt = 10
-inter_cluster_network_rtt = 10
+intra_cluster_network_rtt = 1
+inter_cluster_network_rtt = 20
 
-""" Trace exampe line
+""" Trace exampe line (Version 1 wo call size)
 2
 f85116460cc0c607a484d0521e62fb19 7c30eb0e856124df a484d0521e62fb19 1694378625363 1694378625365
 4ef8ed533389d8c9ace91fc1931ca0cd 48fb12993023f618 ace91fc1931ca0cd 1694378625363 1694378625365
@@ -65,9 +42,6 @@ def print_error(msg):
         time.sleep(1)
     assert False
 
-def stitch_traces():
-    return "Not implemented yet"
-    
 def file_read(path_):
     f = open(path_, "r")
     lines = f.readlines()
@@ -101,7 +75,12 @@ class Span:
 # min len of tokens = 4
 
 SPAN_DELIM = " "
-SPAN_TOKEN_LEN = 5
+
+if LOG_PATH == "./call-logs-sept-16.txt":
+    SPAN_TOKEN_LEN = 6
+else:
+    SPAN_TOKEN_LEN = 5
+
 def parse_and_create_span(line, svc, load):
     tokens = line.split(SPAN_DELIM)
     if len(tokens) != SPAN_TOKEN_LEN:
@@ -162,7 +141,11 @@ def parse(lines):
                             if service_name not in traces_[tid]:
                                 traces_[tid][service_name] = span
                             else:
-                                print_error(service_name + " already exists in trace["+tid+"]")
+                                if LOG_PATH == "./call-logs-sept-16.txt":
+                                    print_log("!!! WARNING !!!, " + service_name + " already exists in trace["+tid+"]")
+                                else:
+                                    print_error(service_name + " already exists in trace["+tid+"]")
+                                
                             # print(str(span.my_span_id) + " is added to " + tid + "len, "+ str(len(traces_[tid])))
                             filtered_lines.append(lines[idx])
                     #######################################################
@@ -182,47 +165,71 @@ REVIEW_V2_svc = "reviews-v2"
 REVIEW_V3_svc = "reviews-v3"
 RATING_svc = "ratings-v1"
 DETAIL_svc = "details-v1"
+###############################
+FILTER_REVIEW_V1 = True # False
+FILTER_REVIEW_V2 = False # False
+FILTER_REVIEW_V3 = True # False
+###############################
 # ratings-v1 and reviews-v1 should not exist in the same trace
 MIN_TRACE_LEN = 3
 MAX_TRACE_LEN = 4
-###############################
-FILTER_REVIEW_V1 = True # False
-FILTER_REVIEW_V3 = True # False
-###############################
 def remove_incomplete_trace(traces_):
     # ret_traces_ = copy.deepcopy(traces_)
     input_trace_len = len(traces_)
     removed_traces_ = dict()
-    what = dict()
+    what = [0]*9
     ret_traces_ = dict()
     weird_span_id = 0
     for tid, spans in traces_.items():
         if FRONTEND_svc not in spans or DETAIL_svc not in spans:
+            if FRONTEND_svc not in spans:
+                print("no frontend")
+            if DETAIL_svc not in spans:
+                print("no detail")
             removed_traces_[tid] = spans
+            for svc, sp in spans.items():
+                print(svc, " ")
+                sp.print()
+            print()
+            what[0] += 1
         elif len(spans) < MIN_TRACE_LEN:
             removed_traces_[tid] = spans
+            what[1] += 1
         elif len(spans) > MAX_TRACE_LEN:
             removed_traces_[tid] = spans
+            what[2] += 1
         elif len(spans) == MIN_TRACE_LEN and (REVIEW_V1_svc not in spans or REVIEW_V2_svc in spans or REVIEW_V3_svc in spans):
             removed_traces_[tid] = spans
+            what[3] += 1
         elif len(spans) == MAX_TRACE_LEN and REVIEW_V2_svc not in spans and REVIEW_V3_svc not in spans:
             removed_traces_[tid] = spans
+            what[4] += 1
         elif spans[FRONTEND_svc].parent_span_id != span_id_of_FRONTEND_svc:
             removed_traces_[tid] = spans
             weird_span_id += 1
+            what[5] += 1
         elif FILTER_REVIEW_V1 and REVIEW_V1_svc in spans:
             if len(spans) != 3:
                 print_spans(spans)
             assert len(spans) == 3
             removed_traces_[tid] = spans
+            what[6] += 1
+        elif FILTER_REVIEW_V2 and REVIEW_V2_svc in spans:
+            if len(spans) != 4:
+                print_spans(spans)
+            assert len(spans) == 4
+            removed_traces_[tid] = spans
+            what[7] += 1
         elif FILTER_REVIEW_V3 and REVIEW_V3_svc in spans:
             if len(spans) != 4:
                 print_spans(spans)
             assert len(spans) == 4
             removed_traces_[tid] = spans
+            what[8] += 1
         else:
             ret_traces_[tid] = spans
     print("weird_span_id: ", weird_span_id)
+    print("filter stats: ", what)
     assert input_trace_len == len(ret_traces_) + len(removed_traces_)
     
     print("#input trace: " + str(input_trace_len))
@@ -416,10 +423,6 @@ def stitch_time(log_path):
     
     print_log("time stitching done")
     return traces, graph_dict, unique_dags
-
-# LOG_PATH = "./call-logs-sept-13.txt"
-# LOG_PATH = "./trace_and_load_log.txt"
-LOG_PATH = "./modified_trace_and_load_log.txt"
 
 if __name__ == "__main__":
     traces, graph_dict, unique_dags = stitch_time(LOG_PATH)
