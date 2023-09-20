@@ -4,14 +4,16 @@
 import time
 from pprint import pprint
 
-# LOG_PATH = "./call-logs-sept-13.txt"
-# LOG_PATH = "./trace_and_load_log.txt"
-LOG_PATH = "./modified_trace_and_load_log.txt"
-# LOG_PATH = "./call-logs-sept-16.txt"
-
 VERBOSITY=1
+
+LOG_PATH = "./modified_trace_and_load_log.txt"
+# LOG_PATH = "./productpage_only_trace.txt"
+
+PRODUCTPAGE_ONLY = True
+# intra_cluster_network_rtt = 1.000000000
+# inter_cluster_network_rtt = 1.000000001
 intra_cluster_network_rtt = 1
-inter_cluster_network_rtt = 20
+inter_cluster_network_rtt = 40
 
 """ Trace exampe line (Version 1 wo call size)
 2
@@ -167,8 +169,8 @@ RATING_svc = "ratings-v1"
 DETAIL_svc = "details-v1"
 ###############################
 FILTER_REVIEW_V1 = True # False
-FILTER_REVIEW_V2 = False # False
-FILTER_REVIEW_V3 = True # False
+FILTER_REVIEW_V2 = True # False
+FILTER_REVIEW_V3 = False# False
 ###############################
 # ratings-v1 and reviews-v1 should not exist in the same trace
 MIN_TRACE_LEN = 3
@@ -320,6 +322,8 @@ def spans_to_graph_and_calc_exclusive_time(spans_):
                     # For example, A->C, B->C is NOT possible.
         # exhaustive search
         if len(child_spans) == 0:
+            parent_span.xt = parent_span.rt
+            print("parent: {} xt: {}, this is leaf service No child".format(parent_span.svc_name, parent_span.xt))
             continue
         exclude_child_rt = 0
         if  len(child_spans) == 1:
@@ -405,6 +409,18 @@ def stitch_time(log_path):
     traces, removed_traces = remove_incomplete_trace(traces)
     traces = append_arbitrary_cluster_id_to_spans(traces)
     traces = change_to_relative_time(traces)
+    ###################################################
+    pp_only_traces = dict()
+    if PRODUCTPAGE_ONLY:
+        for tid, spans in traces.items():
+            pp_only_spans = dict()
+            for svc, span in spans.items():
+                if svc == FRONTEND_svc:
+                    pp_only_spans[svc] = span
+            if len(pp_only_spans) > 0:
+                pp_only_traces[tid] = pp_only_spans
+    traces = pp_only_traces
+    ###################################################
     graph_dict = traces_to_graphs_and_calc_exclusive_time(traces)
     unique_dags = get_unique_dag_list(graph_dict)
     # traces = add_child_services(traces, graph_dict)
@@ -422,6 +438,7 @@ def stitch_time(log_path):
     print("#final valid traces: " + str(len(traces)))
     
     print_log("time stitching done")
+    
     return traces, graph_dict, unique_dags
 
 if __name__ == "__main__":
