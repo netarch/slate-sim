@@ -120,21 +120,17 @@ flags, unparsed = parser.parse_known_args()
 if flags.NUM_REQUEST == None:
     flags.NUM_REQUEST = list()
     # for _ in range(flags.NUM_CLUSTER):)
-    flags.NUM_REQUEST.append(100)
-    flags.NUM_REQUEST.append(1000)
+    flags.NUM_REQUEST.append(10)
+    flags.NUM_REQUEST.append(50)
 
-# In[31]:
-
+## In[31]:
 
 # TRACE_LOG_PATH = "./trace_and_load_log.txt"
 # TRACE_LOG_PATH = "./call-logs-sept-13.txt"
 traces, graph_dict, unique_dags = tst.stitch_time(tst.LOG_PATH)
 
 
-
-
-# In[32]:
-
+## In[32]:
 
 print("print dags")
 for _, dag in unique_dags.items():
@@ -145,15 +141,18 @@ assert len(unique_dags) == 1
 unique_services = dict()
     
     
-# In[33]:
+## In[33]:
     
 tst.print_dag(only_one_unique_dag)
 print()
 
 INGRESS_GW_NAME = "ingress_gw"
+# ENTRANCE = tst.FRONTEND_svc
+ENTRANCE = INGRESS_GW_NAME
 
-ENTRANCE = tst.FRONTEND_svc
-# ENTRANCE = INGRESS_GW_NAME
+if tst.PRODUCTPAGE_ONLY:
+    assert ENTRANCE == INGRESS_GW_NAME
+
 SAME_COMPUTE_TIME = True
 LOAD_IN = True
 ALL_PRODUCTPAGE=False
@@ -169,17 +168,13 @@ if ENTRANCE == INGRESS_GW_NAME:
 print("only_one_unique_dag")
 tst.print_dag(only_one_unique_dag)
     
-# In[32]:
+## In[32]:
 unique_services = list(tst.get_unique_svc_names_from_dag(only_one_unique_dag).keys())
-unique_services
+print("unique_services")
+print(unique_services)
 
 
-# ### Define compute arc var
-# 
-# ***service_name#cluster_id#postfix***
-
-# In[33]:
-
+## In[33]:
 
 def span_to_compute_arc_var_name(svc_name, cid):
     return (svc_name+DELIMITER+str(cid)+DELIMITER+"start", svc_name+DELIMITER+str(cid)+DELIMITER+"end") # return type: tuple
@@ -198,8 +193,7 @@ def spans_to_network_arc_var_name(parent_name, src_cid, child_name, dst_cid):
     return (src_name, dst_name)
 
 
-# In[34]:
-
+## In[34]:
 
 svc_name_list = list()
 compute_arc_var_name = dict()
@@ -215,8 +209,6 @@ for svc_name in unique_services:
 LOG_TIMESTAMP("defining compute_arc_var_name")
 compute_arc_var_name
 
-
-# ### Define network arc var
 
 # In[35]:
 
@@ -277,6 +269,8 @@ if ENTRANCE == tst.FRONTEND_svc:
 elif ENTRANCE == INGRESS_GW_NAME:
     if tst.REVIEW_V1_svc in unique_services:
         assert len(network_arc_var_name) == 18 # bookinfo, with ingress gw, two cluster set up
+    elif tst.PRODUCTPAGE_ONLY:
+        assert len(network_arc_var_name) == 8
     else:
         assert len(network_arc_var_name) == 22 # bookinfo, with ingress gw, two cluster set up
 else:
@@ -301,9 +295,6 @@ check_network_arc_var_name(network_arc_var_name)
 network_arc_var_name
 
 
-# ### Latency model training (linear regression)
-
-# #### Create dataframe of training data
 
 # In[36]:
 
@@ -313,9 +304,7 @@ print(len(unique_services))
 print(len(traces) * len(unique_services))
 
 
-# In[37]:
-
-
+## In[37]:
 
 load = list()
 compute_time = list()
@@ -323,7 +312,7 @@ service_name_ = list()
 index_ = list()
 cid_list = list()
 
-regressor_degree = 2 # 1: linear, >2: polynomial
+regressor_degree = 1 # 1: linear, >2: polynomial
 
 ############################
 ## NOTE: Cluster id is arbitrary for now 
@@ -341,12 +330,13 @@ if REAL_DATA:
                     ## Adding fake ingress gw latency/load data, same as frontend service
                     if ENTRANCE == INGRESS_GW_NAME:
                         if span.svc_name == tst.FRONTEND_svc:
-                            print("add ingress gw observation")
-                            load.append(span.load) ## will not be used
-                            compute_time.append(span.xt) ## will not be used
-                            index_.append(span_to_compute_arc_var_name(ENTRANCE, span.cluster_id))
+                            ###############################################
+                            load.append(span.load)
+                            compute_time.append(0)
+                            ###############################################
+                            index_.append(span_to_compute_arc_var_name(ENTRANCE, cid))
                             service_name_.append(ENTRANCE)
-                            cid_list.append(span.cluster_id)
+                            cid_list.append(cid)
     else:
         for tid, spans in traces.items():
             for svc_name, span in spans.items():
@@ -355,12 +345,10 @@ if REAL_DATA:
                 index_.append(span_to_compute_arc_var_name(span.svc_name, span.cluster_id))
                 service_name_.append(span.svc_name)
                 cid_list.append(span.cluster_id)
-                ## Adding fake ingress gw latency/load data, same as frontend service
                 if ENTRANCE == INGRESS_GW_NAME:
                     if span.svc_name == tst.FRONTEND_svc:
-                        print("add ingress gw observation")
-                        load.append(span.load) ## will not be used
-                        compute_time.append(span.xt) ## will not be used
+                        load.append(span.load)
+                        compute_time.append(0)
                         index_.append(span_to_compute_arc_var_name(ENTRANCE, span.cluster_id))
                         service_name_.append(ENTRANCE)
                         cid_list.append(span.cluster_id)
@@ -370,12 +358,15 @@ else:
         for svc_name in unique_services:
             load += list(np.arange(0,num_data_point))
             for j in range(num_data_point):
-                service_name_.append(svc_name)
-                slope = 5
-                intercept = 10
-                compute_time.append(pow(load[j],regressor_degree)*slope + intercept)
                 cid_list.append(cid)
+                service_name_.append(svc_name)
                 index_.append(span_to_compute_arc_var_name(svc_name, cid))
+                if svc_name == INGRESS_GW_NAME:
+                    compute_time.append(0)
+                else:
+                    slope=1
+                    intercept=10
+                    compute_time.append(pow(load[j],regressor_degree)*slope + intercept)
 
 compute_time_observation = pd.DataFrame(
     data={
@@ -387,8 +378,9 @@ compute_time_observation = pd.DataFrame(
     index=index_
 )
 # with pd.option_context('display.max_rows', None):
-print(compute_time_observation[(compute_time_observation["service_name"]=="details-v1") & (compute_time_observation["cluster_id"]==0)])
-print(compute_time_observation[(compute_time_observation["service_name"]=="details-v1") & (compute_time_observation["cluster_id"]==1)])
+# print(compute_time_observation[(compute_time_observation["service_name"]=="details-v1") & (compute_time_observation["cluster_id"]==0)])
+# print(compute_time_observation[(compute_time_observation["service_name"]=="details-v1") & (compute_time_observation["cluster_id"]==1)])
+print("compute_time_observation")
 with pd.option_context('display.max_rows', None):
     display(compute_time_observation)
 
@@ -400,11 +392,11 @@ with pd.option_context('display.max_rows', None):
 idx = 0
 num_subplot_row = 2
 num_subplot_col = 5
-fig, (plot_list) = plt.subplots(num_subplot_row, num_subplot_col, figsize=(12,6))
+fig, (plot_list) = plt.subplots(num_subplot_row, num_subplot_col, figsize=(16,6))
 fig.tight_layout()
 
 max_compute_time = dict()
-max_load = dict()
+# max_load = dict()
 # max_compute_time = dict()
 regressor_dict = dict()
 for cid in range(flags.NUM_CLUSTER):
@@ -414,40 +406,31 @@ for cid in range(flags.NUM_CLUSTER):
         frontend_temp_df = cid_df[cid_df["service_name"] == tst.FRONTEND_svc]
         if ALL_PRODUCTPAGE:
             X = frontend_temp_df[["load"]]
-            X.index = temp_df.index
             y = frontend_temp_df["compute_time"]
+            X.index = temp_df.index
             y.index = temp_df.index
         else:
             X = temp_df[["load"]]
             y = temp_df["compute_time"]
-        # print()
-        # print("svc_name:", svc_name)
-        # display(X)
-        # display(y)
-        # print()
-        
         temp_x = X.copy()
-        # for ind in temp_x.index:
-            # temp_x["load"][ind] = 1
         for i in range(len(temp_x)):
-            temp_x.iloc[i, 0] = i*5
-        print("svc_name:", svc_name)
-        display(temp_x)
-        display(X)
-        
+            temp_x.iloc[i, 0] = i
         #############################################
         # max_load[svc_name] = max(X["load"])+100
         # max_compute_time[svc_name] = max(y)+1000
-        max_load[svc_name] = 1000000
-        max_compute_time[svc_name] = 1000000
+        # max_load[svc_name] = 1000000
+        # max_load[svc_name] = sum(flags.NUM_REQUEST)
+        if ENTRANCE == INGRESS_GW_NAME and svc_name == ENTRANCE:
+            max_compute_time[svc_name] = 0
+        else:
+            max_compute_time[svc_name] = 1000000
         #############################################
-        
         X_train, X_test, y_train, y_test = train_test_split(
-            X, y, train_size=0.95, random_state=1
+            X, y, train_size=0.9, random_state=1
         )
         feat_transform = make_column_transformer(
-            # (StandardScaler(), ["load"]),
-            ("passthrough", ["load"]),
+            (StandardScaler(), ["load"]),
+            # ("passthrough", ["load"]),
             verbose_feature_names_out=False,
             remainder='drop'
         )
@@ -470,11 +453,10 @@ for cid in range(flags.NUM_CLUSTER):
         # plot_list[row_idx][col_idx].plot(X["load"], y, 'ro', label="observation", alpha=0.2)
         # plot_list[row_idx][col_idx].plot(X["load"], regressor_dict[svc_name].predict(X), 'b.', label="prediction", alpha=0.2)
         plot_list[row_idx][col_idx].plot(X, y, 'ro', label="observation", alpha=0.2)
-        plot_list[row_idx][col_idx].plot(X, regressor_dict[svc_name].predict(X), 'b.', label="prediction", alpha=0.5)
-        plot_list[row_idx][col_idx].plot(temp_x, regressor_dict[svc_name].predict(temp_x), 'go', label="prediction", alpha=0.5)
-        
+        # plot_list[row_idx][col_idx].plot(X, regressor_dict[svc_name].predict(X), 'b.', label="prediction", alpha=0.2)
+        plot_list[row_idx][col_idx].plot(temp_x, regressor_dict[svc_name].predict(temp_x), 'go', label="prediction", alpha=0.2)
         plot_list[row_idx][col_idx].legend()
-        plot_list[row_idx][col_idx].set_title("Service " + svc_name)
+        plot_list[row_idx][col_idx].set_title(svc_name)
         if row_idx == num_subplot_row-1:
             plot_list[row_idx][col_idx].set_xlabel("load")
         if col_idx == 0:
@@ -504,7 +486,6 @@ list(network_arc_var_name.keys())
 # In[41]:
 
 
-idx = 0
 min_load = 0
 max_load = sum(flags.NUM_REQUEST)
 print("max_load = sum(flags.NUM_REQUEST): ", max_load)
@@ -636,10 +617,10 @@ for network_arc_var in network_arc_var_name_list:
 
 network_latency_data = pd.DataFrame(
     data={
-        # "min_load":[min_load]*len(network_arc_var_name_list),
-        # "max_load":[max_load]*len(network_arc_var_name_list),
         "min_network_latency": min_network_latency,
         "max_network_latency": max_network_latency,
+        "min_load":[min_load]*len(network_arc_var_name_list),
+        "max_load":[max_load]*len(network_arc_var_name_list),
     },
     index=network_arc_var_name_list
     # index=network_arc_var_name
@@ -661,10 +642,10 @@ compute_time = dict()
 compute_load = dict()
 for svc_name in unique_services:
     print_log(svc_name)
-    # compute_time[svc_name] = gppd.add_vars(model, compute_time_data[svc_name], name="compute_time", lb="min_compute_time", ub="max_compute_time")
-    # compute_load[svc_name] = gppd.add_vars(model, compute_time_data[svc_name], name="load_for_compute_edge", lb="min_load", ub="max_load")
-    compute_time[svc_name] = gppd.add_vars(model, compute_time_data[svc_name], name="compute_time")
-    compute_load[svc_name] = gppd.add_vars(model, compute_time_data[svc_name], name="load_for_compute_edge")
+    compute_time[svc_name] = gppd.add_vars(model, compute_time_data[svc_name], name="compute_time", lb="min_compute_time", ub="max_compute_time")
+    compute_load[svc_name] = gppd.add_vars(model, compute_time_data[svc_name], name="load_for_compute_edge", lb="min_load", ub="max_load")
+    # compute_time[svc_name] = gppd.add_vars(model, compute_time_data[svc_name], name="compute_time")
+    # compute_load[svc_name] = gppd.add_vars(model, compute_time_data[svc_name], name="load_for_compute_edge")
 model.update()
 
 m_feats = dict()
@@ -683,8 +664,10 @@ for svc_name in unique_services:
 model.update()
 
 network_latency = gppd.add_vars(model, network_latency_data, name="network_latency", lb="min_network_latency", ub="max_network_latency")
-# network_load = gppd.add_vars(model, network_latency_data, name="load_for_network_edge", lb="min_load", ub="max_load")
-network_load = gppd.add_vars(model, network_latency_data, name="load_for_network_edge")
+
+network_load = gppd.add_vars(model, network_latency_data, name="load_for_network_edge", lb="min_load", ub="max_load")
+# network_load = gppd.add_vars(model, network_latency_data, name="load_for_network_edge")
+
 model.update()
 
 network_egress_cost = gppd.add_vars(model, network_egress_cost_data, name="network_egress_cost", lb="min_network_egress_cost", ub="max_network_egress_cost")
