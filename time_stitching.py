@@ -3,13 +3,17 @@
 
 import time
 from pprint import pprint
+from flask import Flask
+import logging
+
+app = Flask(__name__)
+app.logger.setLevel(logging.DEBUG)
 
 VERBOSITY=1
-
+log_prefix="[SLATE]"
 LOG_PATH = "./modified_trace_and_load_log.txt"
-# LOG_PATH = "./productpage_only_trace.txt"
 
-PRODUCTPAGE_ONLY = True
+PRODUCTPAGE_ONLY = False
 # intra_cluster_network_rtt = 1.000000000
 # inter_cluster_network_rtt = 1.000000001
 intra_cluster_network_rtt = 1
@@ -51,7 +55,7 @@ def file_read(path_):
 
 
 class Span:
-    def __init__(self, svc, my_span_id, parent_span_id, st, et, load, cluster_id):
+    def __init__(self, svc, my_span_id, parent_span_id, st, et, load, cs, cluster_id):
         self.svc_name = svc
         self.child_spans = list()
         self.cluster_id = cluster_id
@@ -61,27 +65,24 @@ class Span:
         self.my_span_id = my_span_id
         self.parent_span_id = parent_span_id
         
-        self.request_size_in_bytes = 10 # parent_span to this span
+        self.call_size = cs
         
         self.st = st
         self.et = et
         self.rt = et - st
         self.xt = 0
         self.load = load
+        
+        self.depth = 0 # ingress gw's depth: 0, frontend's depth: 1
     
-    def print(self):
-        print("SPAN,{},{},{}->{},{},{},{},{},{}".format(self.svc_name, self.cluster_id, self.parent_span_id, self.my_span_id, self.st, self.et, self.rt, self.xt, self.load))
-
-# <Trace Id> <Span Id> <Parent Span Id> <Start Time> <End Time>
-# <Parent Span Id> will not exist for the frontend service. e.g., productpage service in bookinfo
-# min len of tokens = 4
-
+    def set_callsize(self, cs):
+        self.call_size = cs
+    
+    def __str__(self):
+        return f"SPAN {self.svc_name}, cid({self.cluster_id}), span({self.my_span_id}), parent_span({self.parent_span_id}), load({self.load}), rt({self.rt}), xt({self.xt}), callsize({self.call_size})"
+        
 SPAN_DELIM = " "
-
-if LOG_PATH == "./call-logs-sept-16.txt":
-    SPAN_TOKEN_LEN = 6
-else:
-    SPAN_TOKEN_LEN = 5
+SPAN_TOKEN_LEN = 5
 
 def parse_and_create_span(line, svc, load):
     tokens = line.split(SPAN_DELIM)
@@ -92,7 +93,7 @@ def parse_and_create_span(line, svc, load):
     psid = tokens[2]
     st = int(tokens[3])
     et = int(tokens[4])
-    span = Span(svc, sid, psid, st, et, load, -1)
+    span = Span(svc, sid, psid, st, et, load, -10, -1)
     return tid, span
 
 DE_in_log=" "
@@ -191,7 +192,7 @@ def remove_incomplete_trace(traces_):
             removed_traces_[tid] = spans
             for svc, sp in spans.items():
                 print(svc, " ")
-                sp.print()
+                print(sp)
             print()
             what[0] += 1
         elif len(spans) < MIN_TRACE_LEN:
@@ -258,7 +259,7 @@ def change_to_relative_time(traces_):
         except Exception as error:
             # print(tid + " does not have " + FRONTEND_svc + ". Skip this trace")
             # for _, span in spans.items():
-            #     span.print()
+            #     print(span)
             print(error)
             exit()
         for _, span in spans.items():
@@ -272,7 +273,7 @@ def change_to_relative_time(traces_):
 
 def print_spans(spans_):
     for _, span in spans_.items():
-        span.print()
+        print(span)
 
 def print_dag(single_dag_):
     for parent_span, children in single_dag_.items():
@@ -304,106 +305,212 @@ def is_parallel_execution(span_a, span_b):
             return 2
     else: # sequential execution
         return 0
-                
-def spans_to_graph_and_calc_exclusive_time(spans_):
-    # visited = set()
-    single_dag = dict()
-    # parent_span = spans_[root_svc]
-    for _, parent_span in spans_.items():
-        single_dag[parent_span] = list()
-        child_spans = list()
-        for _, span in spans_.items():
-            # if span not in visited: # visited is redundant currently.
+
+
+'''
+callgraph:
+    - key: parent service name
+    - value: list of child service names
+'''
+def single_trace_to_callgraph(single_trace_):
+    callgraph = dict()
+    svc_list = list()
+    for _, parent_span in single_trace_.items():
+        svc_list.append(parent_span.svc_name)
+        callgraph[parent_span.svc_name] = list()
+        for _, span in single_trace_.items():
             if span.parent_span_id == parent_span.my_span_id:
-                child_spans.append(span)
-                single_dag[parent_span].append(span)
-                    # visited.add(span)
-                    # NOTE: ASSUMPTION of visited: there is always only one parent service. If one service is a child service of some parent service, there is any other parent service for this child service.
-                    # For example, A->C, B->C is NOT possible.
-        # exhaustive search
-        if len(child_spans) == 0:
-            parent_span.xt = parent_span.rt
-            print("parent: {} xt: {}, this is leaf service No child".format(parent_span.svc_name, parent_span.xt))
-            continue
-        exclude_child_rt = 0
-        if  len(child_spans) == 1:
-            print("parent: {}, child_1: {}, child_2: None, single child".format(parent_span.svc_name, child_spans[0].svc_name))
-            exclude_child_rt = child_spans[0].rt
-        else: # else is redundant but still I leave it there to make the if/else logic easy to follow
-            for i in range(len(child_spans)):
-                for j in range(i+1, len(child_spans)):
-                    is_parallel = is_parallel_execution(child_spans[i], child_spans[j])
-                    if is_parallel == 1 or is_parallel == 2: # parallel execution
-                        # TODO: parallel-1 and parallel-2 should be dealt with individually.
-                        exclude_child_rt = max(child_spans[i].rt, child_spans[j].rt)
-                        print("parent: {}, child_1: {}, child_2: {}, parallel-{} sibling".format(parent_span.svc_name, child_spans[i].svc_name, child_spans[j].svc_name, is_parallel))
-                    else: # sequential execution
-                        exclude_child_rt = child_spans[i].rt + child_spans[j].rt
-                        print("parent: {}, child_1:{}, child_2: {}, sequential sibling".format(parent_span.svc_name, child_spans[i].svc_name, child_spans[j].svc_name))
-        parent_span.xt = parent_span.rt - exclude_child_rt
-        if parent_span.xt < 0:
-            print("parent_span")
-            parent_span.print()
-            print("child_spans")
-            for span in child_spans:
-                span.print()
-            print_error("parent_span exclusive time cannot be negative value: {}".format(parent_span.xt))
-        if len(single_dag[parent_span]) == 0:
-            del single_dag[parent_span]
-    return single_dag
+                callgraph[parent_span.svc_name].append(span.svc_name)
+                parent_span.child_spans.append(span)
+        # if len(callgraph[parent_span.svc_name]) == 0:
+            # del callgraph[parent_span.svc_name]
+    svc_list.sort()
+    key_ = ""
+    for svc in svc_list:
+        key_ += svc+","
+    return callgraph, key_
 
 
-def traces_to_graphs_and_calc_exclusive_time(traces_):
+def traces_to_graphs(traces_):
     graph_dict = dict()
     for tid, spans in traces_.items():
-        single_dag = spans_to_graph_and_calc_exclusive_time(spans)
-        graph_dict[tid] = single_dag
-    return graph_dict
+        callgraph, cg_key = single_trace_to_callgraph(spans)
+        # print(f"tid: {tid}, callgraph: {callgraph}, cg_key: {cg_key}")
+        graph_dict[cg_key] = callgraph
+    # print(f"len: {len(graph_dict)}, graph_dict: {graph_dict}")
+    print(f"{log_prefix} Graph dict: {graph_dict}")
+    print(f"{log_prefix} Call graph: {callgraph}")
+    return callgraph, graph_dict
 
 
-# def add_child_services(traces_, graph_dict_):
-def add_child_services(graph_dict_):
-    for tid in graph_dict_:
-        # spans = traces_[tid] # { svc_name: span }
-        dag = graph_dict_[tid] # { parent_span: list of child spans }
-        for parent_span, children in dag.items():
-            for child_span in children:
-                # spans[parent_span.svc_name].child_spans.append(child_span)
-                parent_span.child_spans.append(child_span)
-                # print("parent: {} adds child: {}".format(parent_span.svc_name, child_span.svc_name))
 
-def get_unique_dag_list(graph_dict_):
-    unique_dags = dict()
-    for _, dag in graph_dict_.items():
-        temp_list = list()
-        for parent_span, children in dag.items():
-            for child_span in children:
-                temp_list.append((parent_span.svc_name + "," + child_span.svc_name))
-        temp_list.sort()
-        temp_str = ""
-        for elem in temp_list:
-            temp_str += elem + ","
-        if temp_str not in unique_dags:
-            unique_dags[temp_str] = dag
-    print(" --- unique dag list --- ")
-    i = 0
-    for _, dag in unique_dags.items():
-        print("unique dag #"+str(i))
-        print_dag(dag)
-        i += 1
-    return unique_dags
+        
+def set_depth_of_span(cg, parent_svc, children, depth_d, prev_dep):
+    if len(children) == 0:
+        # print(f"{log_prefix} Leaf service {parent_svc}, Escape recursive function")
+        return
+    for child_svc in children:
+        if child_svc not in depth_d:
+            depth_d[child_svc] = prev_dep + 1
+            # print(f"{log_prefix} Service {child_svc}, depth, {depth_d[child_svc]}")
+        set_depth_of_span(cg, child_svc, cg[child_svc], depth_d, prev_dep+1)
 
-def get_unique_svc_names_from_dag(dag_):
-    unique_svc_names = dict()
-    for parent_span, children in dag_.items():
-        for child_span in children:
-            unique_svc_names[parent_span.svc_name] = "xxxx"
-            unique_svc_names[child_span.svc_name] = "xxxx"
-    return unique_svc_names
+
+def exclusive_time(single_trace_):
+    for svc, parent_span in single_trace_.items():
+        child_span_list = list()
+        for svc, span in single_trace_.items():
+            if span.parent_span_id == parent_span.my_span_id:
+                child_span_list.append(span)
+        if len(child_span_list) == 0:
+            exclude_child_rt = 0
+        elif  len(child_span_list) == 1:
+            exclude_child_rt = child_span_list[0].rt
+        else: # else is redundant but still I leave it there to make the if/else logic easy to follow
+            for i in range(len(child_span_list)):
+                for j in range(i+1, len(child_span_list)):
+                    is_parallel = is_parallel_execution(child_span_list[i], child_span_list[j])
+                    if is_parallel == 1 or is_parallel == 2: # parallel execution
+                        # TODO: parallel-1 and parallel-2 should be dealt with individually.
+                        exclude_child_rt = max(child_span_list[i].rt, child_span_list[j].rt)
+                        # print("parent: {}, child_1: {}, child_2: {}, parallel-{} sibling".format(parent_span.svc_name, child_span_list[i].svc_name, child_span_list[j].svc_name, is_parallel))
+                    else: # sequential execution
+                        exclude_child_rt = child_span_list[i].rt + child_span_list[j].rt
+                        # print("parent: {}, child_1:{}, child_2: {}, sequential sibling".format(parent_span.svc_name, child_span_list[i].svc_name, child_span_list[j].svc_name))
+        parent_span.xt = parent_span.rt - exclude_child_rt
+        print(f"Service: {parent_span.svc_name}, Response time: {parent_span.rt}, Exclude_child_rt: {exclude_child_rt}, Exclusive time: {parent_span.xt}")
+        if parent_span.xt < 0.0:
+            print_error("parent_span exclusive time cannot be negative value: {}".format(parent_span.xt))
+        if parent_span.svc_name == FRONTEND_svc:
+            assert parent_span.xt > 0.0
+        ###########################################
+        # if parent_span.svc_name == FRONTEND_svc:
+        #     parent_span.xt = parent_span.rt
+        # else:
+        #     parent_span.xt = 0
+        ###########################################
+    return single_trace_
+
+
+def calc_exclusive_time(traces_):
+    for tid, spans in traces_.items():
+        single_trace_ex_time = exclusive_time(spans)
+
+    
+# def spans_to_graph_and_calc_exclusive_time(spans_):
+#     # visited = set()
+#     single_dag = dict()
+#     # parent_span = spans_[root_svc]
+#     for _, parent_span in spans_.items():
+#         single_dag[parent_span] = list()
+#         child_spans = list()
+#         for _, span in spans_.items():
+#             # if span not in visited: # visited is redundant currently.
+#             if span.parent_span_id == parent_span.my_span_id:
+#                 child_spans.append(span)
+#                 single_dag[parent_span].append(span)
+#                     # visited.add(span)
+#                     # NOTE: ASSUMPTION of visited: there is always only one parent service. If one service is a child service of some parent service, there is any other parent service for this child service.
+#                     # For example, A->C, B->C is NOT possible.
+#         # exhaustive search
+#         if len(child_spans) == 0:
+#             parent_span.xt = parent_span.rt
+#             print("parent: {} xt: {}, this is leaf service No child".format(parent_span.svc_name, parent_span.xt))
+#             continue
+#         exclude_child_rt = 0
+#         if  len(child_spans) == 1:
+#             print("parent: {}, child_1: {}, child_2: None, single child".format(parent_span.svc_name, child_spans[0].svc_name))
+#             exclude_child_rt = child_spans[0].rt
+#         else: # else is redundant but still I leave it there to make the if/else logic easy to follow
+#             for i in range(len(child_spans)):
+#                 for j in range(i+1, len(child_spans)):
+#                     is_parallel = is_parallel_execution(child_spans[i], child_spans[j])
+#                     if is_parallel == 1 or is_parallel == 2: # parallel execution
+#                         # TODO: parallel-1 and parallel-2 should be dealt with individually.
+#                         exclude_child_rt = max(child_spans[i].rt, child_spans[j].rt)
+#                         print("parent: {}, child_1: {}, child_2: {}, parallel-{} sibling".format(parent_span.svc_name, child_spans[i].svc_name, child_spans[j].svc_name, is_parallel))
+#                     else: # sequential execution
+#                         exclude_child_rt = child_spans[i].rt + child_spans[j].rt
+#                         print("parent: {}, child_1:{}, child_2: {}, sequential sibling".format(parent_span.svc_name, child_spans[i].svc_name, child_spans[j].svc_name))
+#         parent_span.xt = parent_span.rt - exclude_child_rt
+#         if parent_span.xt < 0:
+#             print("parent_span")
+#             print(parent_span)
+#             print("child_spans")
+#             for span in child_spans:
+#                 print(span)
+#             print_error("parent_span exclusive time cannot be negative value: {}".format(parent_span.xt))
+#         if len(single_dag[parent_span]) == 0:
+#             del single_dag[parent_span]
+#     return single_dag
+
+
+# def traces_to_graphs_and_calc_exclusive_time(traces_):
+#     graph_dict = dict()
+#     for tid, spans in traces_.items():
+#         single_dag = spans_to_graph_and_calc_exclusive_time(spans)
+#         graph_dict[tid] = single_dag
+#     return graph_dict
+
+
+# def add_child_services(graph_dict_):
+#     for tid in graph_dict_:
+#         # spans = traces_[tid] # { svc_name: span }
+#         dag = graph_dict_[tid] # { parent_span: list of child spans }
+#         for parent_span, children in dag.items():
+#             for child_span in children:
+#                 # spans[parent_span.svc_name].child_spans.append(child_span)
+#                 parent_span.child_spans.append(child_span)
+#                 # print("parent: {} adds child: {}".format(parent_span.svc_name, child_span.svc_name))
+
+# def get_unique_dag_list(graph_dict_):
+#     unique_dags = dict()
+#     for _, dag in graph_dict_.items():
+#         temp_list = list()
+#         for parent_span, children in dag.items():
+#             for child_span in children:
+#                 temp_list.append((parent_span.svc_name + "," + child_span.svc_name))
+#         temp_list.sort()
+#         temp_str = ""
+#         for elem in temp_list:
+#             temp_str += elem + ","
+#         if temp_str not in unique_dags:
+#             unique_dags[temp_str] = dag
+#     print(" --- unique dag list --- ")
+#     i = 0
+#     for _, dag in unique_dags.items():
+#         print("unique dag #"+str(i))
+#         print_dag(dag)
+#         i += 1
+#     return unique_dags
+
+# def get_unique_svc_names_from_dag(dag_):
+#     unique_svc_names = dict()
+#     for parent_span, children in dag_.items():
+#         for child_span in children:
+#             unique_svc_names[parent_span.svc_name] = "xxxx"
+#             unique_svc_names[child_span.svc_name] = "xxxx"
+#     return unique_svc_names
+
+
+def print_all_trace(traces_):
+    for tid, single_trace in traces_.items():
+        print(f"{log_prefix} ======================= ")
+        print(f"{log_prefix} Trace: " + tid)
+        for svc, span in single_trace.items():
+            print(span)
+        print(f"{log_prefix} ======================= ")
+    print(f"{log_prefix} Num final valid traces: {len(traces_)}")
+
+
+def inject_arbitrary_callsize(traces_, depth_dict):
+    for tid, single_trace in traces_.items():
+        for svc, span in single_trace.items():
+            span.call_size = depth_dict[svc]*10
+    
 
 def stitch_time(log_path):
     print_log("time stitching starts")
-    
     lines = file_read(log_path)
     filtered_lines, traces = parse(lines)
     traces, removed_traces = remove_incomplete_trace(traces)
@@ -419,27 +526,30 @@ def stitch_time(log_path):
                     pp_only_spans[svc] = span
             if len(pp_only_spans) > 0:
                 pp_only_traces[tid] = pp_only_spans
-    traces = pp_only_traces
+        traces = pp_only_traces
     ###################################################
-    graph_dict = traces_to_graphs_and_calc_exclusive_time(traces)
-    unique_dags = get_unique_dag_list(graph_dict)
-    # traces = add_child_services(traces, graph_dict)
-    add_child_services(graph_dict)
+    calc_exclusive_time(traces)
+    call_graph, graph_dict = traces_to_graphs(traces)
     
-    print("*"*50)
-    for tid, spans in traces.items():
-        print("="*30)
-        print("Trace: " + tid)
-        print_dag(graph_dict[tid])
-        for _, span in spans.items():
-            span.print()
-        print("="*30)
-    print()
-    print("#final valid traces: " + str(len(traces)))
-    
+    depth_dict = dict()
+    for parent_svc, children in call_graph.items():
+        if parent_svc == FRONTEND_svc:
+            frontend_depth = 1
+            depth_dict[parent_svc] = 1
+            set_depth_of_span(call_graph, parent_svc, children, depth_dict, frontend_depth)
+    print(f"{log_prefix} Depth {depth_dict}")
+    inject_arbitrary_callsize(traces, depth_dict)
+    print(f"{log_prefix} Graph dict: {graph_dict}")
+    print(f"{log_prefix} Call graph: {call_graph}")
+    assert len(graph_dict) == 1
+    for k, cg in graph_dict.items():
+        print(f"{log_prefix} graph key: {k}")
+        for parent_svc, children in cg.items():
+            for child_svc in children:
+                print(f"{log_prefix} {parent_svc} -> {child_svc}")
+    print_all_trace(traces)
     print_log("time stitching done")
-    
-    return traces, graph_dict, unique_dags
+    return traces, call_graph, depth_dict
 
 if __name__ == "__main__":
-    traces, graph_dict, unique_dags = stitch_time(LOG_PATH)
+    traces, call_graph, depth_dict = stitch_time(LOG_PATH)

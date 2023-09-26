@@ -37,6 +37,19 @@ random.seed(1234)
 VERBOSITY=1
 DELIMITER="#"
 
+INGRESS_GW_NAME = "ingress_gw"
+# ENTRANCE = tst.FRONTEND_svc
+ENTRANCE = INGRESS_GW_NAME
+if tst.PRODUCTPAGE_ONLY:
+    assert ENTRANCE == INGRESS_GW_NAME
+SAME_COMPUTE_TIME = False
+LOAD_IN = True
+ALL_PRODUCTPAGE=False
+REAL_DATA=False
+REGRESSOR_DEGREE = 1 # 1: linear, >2: polynomial
+
+DUMMY_CALLSIZE=10
+
 timestamp_list = list()
 temp_timestamp_list = list()
 def LOG_TIMESTAMP(event_name):
@@ -99,7 +112,7 @@ def argparse_add_argument(parser):
     parser.add_argument("--routing_algorithm", type=str, default="SLATE", choices=["LCLB", "MCLB", "heuristic_TE", "SLATE"])
     parser.add_argument("--NUM_CLUSTER", type=int, default=2)
     parser.add_argument('--NUM_REQUEST', type=list_of_ints, default=None)
-    parser.add_argument("--regressor_degree", type=int, default=1)
+    parser.add_argument("--REGRESSOR_DEGREE", type=int, default=1)
     
 def check_argument(flags):
     assert len(flags.NUM_REQUEST) == flags.NUM_CLUSTER
@@ -121,55 +134,30 @@ if flags.NUM_REQUEST == None:
     flags.NUM_REQUEST = list()
     # for _ in range(flags.NUM_CLUSTER):)
     flags.NUM_REQUEST.append(10)
-    flags.NUM_REQUEST.append(50)
+    flags.NUM_REQUEST.append(1000)
 
 ## In[31]:
 
 # TRACE_LOG_PATH = "./trace_and_load_log.txt"
 # TRACE_LOG_PATH = "./call-logs-sept-13.txt"
-traces, graph_dict, unique_dags = tst.stitch_time(tst.LOG_PATH)
+traces, callgraph, depth_dict = tst.stitch_time(tst.LOG_PATH)
 
 
 ## In[32]:
-
-print("print dags")
-for _, dag in unique_dags.items():
-    tst.print_dag(dag)
-    only_one_unique_dag = dag
-    
-assert len(unique_dags) == 1
-unique_services = dict()
-    
-    
-## In[33]:
-    
-tst.print_dag(only_one_unique_dag)
-print()
-
-INGRESS_GW_NAME = "ingress_gw"
-# ENTRANCE = tst.FRONTEND_svc
-ENTRANCE = INGRESS_GW_NAME
-
-if tst.PRODUCTPAGE_ONLY:
-    assert ENTRANCE == INGRESS_GW_NAME
-
-SAME_COMPUTE_TIME = True
-LOAD_IN = True
-ALL_PRODUCTPAGE=False
-REAL_DATA=False
 
 if ENTRANCE == INGRESS_GW_NAME:
-    ingress_span_cluster_0 = tst.Span(INGRESS_GW_NAME, 0, 0, 0, 10, 0, 0)
-    only_one_unique_dag[ingress_span_cluster_0] = list()
-    for parent_span, children in only_one_unique_dag.items():
-        if parent_span.svc_name == tst.FRONTEND_svc:
-            only_one_unique_dag[ingress_span_cluster_0].append(parent_span)
+    callgraph[INGRESS_GW_NAME] = list()
+    for parent_svc, children in callgraph.items():
+        if parent_svc == tst.FRONTEND_svc:
+            callgraph[INGRESS_GW_NAME].append(parent_svc)
+        
+    for parent_svc, child_svc_list in callgraph.items():
+        print_log(parent_svc + ":")
+        print_log(child_svc_list)
     
-print("only_one_unique_dag")
-tst.print_dag(only_one_unique_dag)
-    
-## In[32]:
-unique_services = list(tst.get_unique_svc_names_from_dag(only_one_unique_dag).keys())
+print("callgraph")
+print(f"{callgraph}")
+unique_services = list(callgraph.keys())
 print("unique_services")
 print(unique_services)
 
@@ -225,37 +213,40 @@ network_arc_var_name
 - value: request_size_in_bytes
 '''
 network_arc_var_name = dict()
-for parent_span, children in only_one_unique_dag.items():
+for parent_svc, children in callgraph.items():
     # leaf service to dst
     if len(children) == 0: # leaf service
-        print(parent_span.svc_name + " is leaf service")
+        print(parent_svc + " is leaf service")
         for src_cid in range(flags.NUM_CLUSTER):
-            tuple_var_name = spans_to_network_arc_var_name(parent_span.svc_name, src_cid, destination_name, "*")
+            tuple_var_name = spans_to_network_arc_var_name(parent_svc, src_cid, destination_name, "*")
             if tuple_var_name not in network_arc_var_name:
                 network_arc_var_name[tuple_var_name] = 0
-    for child_span in children:
+    for child_svc in children:
         ##################################################
-        # if parent_span.svc_name == tst.FRONTEND_svc:
-        # if parent_span.svc_name == INGRESS_GW_NAME:
-        if parent_span.svc_name == ENTRANCE:
+        # if parent_svc == tst.FRONTEND_svc:
+        # if parent_svc == INGRESS_GW_NAME:
+        if parent_svc == ENTRANCE:
         ##################################################
             # src to frontend service
             for src_cid in range(flags.NUM_CLUSTER):
-                tuple_var_name = spans_to_network_arc_var_name(source_name, "*", parent_span.svc_name, src_cid)
+                tuple_var_name = spans_to_network_arc_var_name(source_name, "*", parent_svc, src_cid)
                 if tuple_var_name not in network_arc_var_name:
-                    network_arc_var_name[tuple_var_name] = parent_span.request_size_in_bytes
+                    network_arc_var_name[tuple_var_name] = 0
                 # frontend to service
                 for dst_cid in range(flags.NUM_CLUSTER):
-                    tuple_var_name = spans_to_network_arc_var_name(parent_span.svc_name, src_cid, child_span.svc_name, dst_cid)
+                    tuple_var_name = spans_to_network_arc_var_name(parent_svc, src_cid, child_svc, dst_cid)
                     if tuple_var_name not in network_arc_var_name:
-                        network_arc_var_name[tuple_var_name] = child_span.request_size_in_bytes
+                        if parent_svc == INGRESS_GW_NAME:
+                            network_arc_var_name[tuple_var_name] = 100*10
+                        else:
+                            network_arc_var_name[tuple_var_name] = depth_dict[parent_svc]*10
         # service to service
         else:
             for src_cid in range(flags.NUM_CLUSTER):
                 for dst_cid in range(flags.NUM_CLUSTER):
-                    tuple_var_name = spans_to_network_arc_var_name(parent_span.svc_name, src_cid, child_span.svc_name, dst_cid)
+                    tuple_var_name = spans_to_network_arc_var_name(parent_svc, src_cid, child_svc, dst_cid)
                     if tuple_var_name not in network_arc_var_name:
-                        network_arc_var_name[tuple_var_name] = child_span.request_size_in_bytes
+                        network_arc_var_name[tuple_var_name] = depth_dict[parent_svc]*10
 print("len(network_arc_var_name)")
 print(len(network_arc_var_name))
 for tuple_var_name, _ in network_arc_var_name.items():
@@ -294,16 +285,6 @@ def check_network_arc_var_name(net_arc_var_n):
 check_network_arc_var_name(network_arc_var_name)
 network_arc_var_name
 
-
-
-# In[36]:
-
-
-print(len(traces))
-print(len(unique_services))
-print(len(traces) * len(unique_services))
-
-
 ## In[37]:
 
 load = list()
@@ -311,9 +292,6 @@ compute_time = list()
 service_name_ = list()
 index_ = list()
 cid_list = list()
-
-regressor_degree = 1 # 1: linear, >2: polynomial
-
 ############################
 ## NOTE: Cluster id is arbitrary for now 
 ############################
@@ -352,21 +330,51 @@ if REAL_DATA:
                         index_.append(span_to_compute_arc_var_name(ENTRANCE, span.cluster_id))
                         service_name_.append(ENTRANCE)
                         cid_list.append(span.cluster_id)
+## Original                   
+# else:
+#     num_data_point = 100
+#     for cid in range(flags.NUM_CLUSTER):
+#         for svc_name in unique_services:
+#             load += list(np.arange(0,num_data_point))
+#             for j in range(num_data_point):
+#                 cid_list.append(cid)
+#                 service_name_.append(svc_name)
+#                 index_.append(span_to_compute_arc_var_name(svc_name, cid))
+#                 if svc_name == INGRESS_GW_NAME:
+#                     compute_time.append(0)
+#                 else:
+#                     slope=1
+#                     intercept=10
+#                     compute_time.append(pow(load[j],REGRESSOR_DEGREE)*slope + intercept)
+
+## New
 else:
     num_data_point = 100
     for cid in range(flags.NUM_CLUSTER):
         for svc_name in unique_services:
+            ld = list()
+            comptime = list()
             load += list(np.arange(0,num_data_point))
             for j in range(num_data_point):
+                if svc_name == INGRESS_GW_NAME:
+                    ct = 0
+                # if svc_name == tst.FRONTEND_svc:
+                else:
+                    if SAME_COMPUTE_TIME:
+                        slope = 1
+                        intercept = 10
+                    else:
+                        slope = hash(svc_name)%5
+                        intercept = 10
+                    ct = pow(load[j],REGRESSOR_DEGREE)*slope + intercept
+                comptime.append(ct)
+                ld.append(load[j])
+                compute_time.append(ct)
                 cid_list.append(cid)
                 service_name_.append(svc_name)
                 index_.append(span_to_compute_arc_var_name(svc_name, cid))
-                if svc_name == INGRESS_GW_NAME:
-                    compute_time.append(0)
-                else:
-                    slope=1
-                    intercept=10
-                    compute_time.append(pow(load[j],regressor_degree)*slope + intercept)
+            print(f"service,{svc_name}, load,{ld}, compute time,{comptime}, degree({REGRESSOR_DEGREE}), slope({slope}), intercept({intercept})")
+            print()
 
 compute_time_observation = pd.DataFrame(
     data={
@@ -434,11 +442,11 @@ for cid in range(flags.NUM_CLUSTER):
             verbose_feature_names_out=False,
             remainder='drop'
         )
-        if regressor_degree == 1:
+        if REGRESSOR_DEGREE == 1:
             regressor_dict[svc_name] = make_pipeline(feat_transform, LinearRegression())
             regressor_dict[svc_name].fit(X_train, y_train)
-        elif regressor_degree > 1:
-            poly = PolynomialFeatures(degree=regressor_degree, include_bias=True)
+        elif REGRESSOR_DEGREE > 1:
+            poly = PolynomialFeatures(degree=REGRESSOR_DEGREE, include_bias=True)
             regressor_dict[svc_name] = make_pipeline(feat_transform, poly, LinearRegression())
             regressor_dict[svc_name].fit(X_train, y_train)
             
@@ -679,8 +687,9 @@ model.update()
 
 # egress cost sum
 network_egress_cost_sum = sum(network_egress_cost.multiply(network_load))
+compute_egress_cost_sum = 0
 for svc_name in unique_services:
-    compute_egress_cost_sum = sum(compute_egress_cost[svc_name].multiply(compute_load[svc_name]))
+    compute_egress_cost_sum += sum(compute_egress_cost[svc_name].multiply(compute_load[svc_name]))
 total_egress_sum = network_egress_cost_sum + compute_egress_cost_sum
 print_log("total_egress_sum: ", total_egress_sum)
 
@@ -689,14 +698,17 @@ network_latency_sum = sum(network_latency.multiply(network_load))
 print("network_latency_sum")
 print(network_latency_sum)
 print()
+compute_latency_sum = 0
 for svc_name in unique_services:
-    compute_latency_sum = sum(compute_time[svc_name].multiply(m_feats[svc_name]["load"])) # m_feats[svc_name]["load"] is identical to compute_load[svc_name]
-    print("compute_latency_sum, ", svc_name)
-    display(compute_latency_sum)
+    compute_latency_sum += sum(compute_time[svc_name].multiply(m_feats[svc_name]["load"])) # m_feats[svc_name]["load"] is identical to compute_load[svc_name]
+    # print("compute_latency_sum, ", svc_name)
+    # display(compute_latency_sum)
+print("compute_latency_sum")
+print(compute_latency_sum)
 total_latency_sum = network_latency_sum + compute_latency_sum
 print_log("\ntotal_latency_sum: ", total_latency_sum)
 
-objective = "latency" # latency or egress_cost or multi-objective
+objective = "multi-objective" # latency or egress_cost or multi-objective
 if objective == "latency":
     model.setObjective(total_latency_sum, gp.GRB.MINIMIZE)
 elif objective == "egress_cost":
@@ -788,9 +800,9 @@ destination = dict()
 destination[destination_node] = TOTAL_NUM_REQUEST
 dest_keys = destination.keys()
 leaf_services = list()
-for parent_span, children in only_one_unique_dag.items():
+for parent_svc, children in callgraph.items():
     if len(children) == 0: # leaf service
-        leaf_services.append(parent_span.svc_name)
+        leaf_services.append(parent_svc)
 num_leaf_services = len(leaf_services)
 print_log("leaf_services: ", leaf_services)
 print_log("num_leaf_services: ", num_leaf_services)
@@ -810,22 +822,22 @@ for svc_name in unique_services:
 
 # End node in-out flow conservation
 # case 1 (start node, end&leaf node): incoming num requests == outgoing num request for all nodes
-for parent_span, children in only_one_unique_dag.items():
+for parent_svc, children in callgraph.items():
     for cid in range(flags.NUM_CLUSTER):
         if len(children) == 0: # leaf_services:
-            end_node = parent_span.svc_name + DELIMITER + str(cid) + DELIMITER + "end"
+            end_node = parent_svc + DELIMITER + str(cid) + DELIMITER + "end"
             node_flow = model.addConstr((gp.quicksum(aggregated_load.select('*', end_node)) == gp.quicksum(aggregated_load.select(end_node, '*'))), name="flow_conservation["+end_node+"]-leaf_endnode")
 
 # case 2 (end&non-leaf node): incoming num requests == outgoing num request for all nodes
-for parent_span, children in only_one_unique_dag.items():
+for parent_svc, children in callgraph.items():
     if len(children) > 0: # non-leaf services:
         for parent_cid in range(flags.NUM_CLUSTER):
-            end_node = parent_span.svc_name + DELIMITER + str(parent_cid) + DELIMITER + "end"
-            for child_span in children:
+            end_node = parent_svc + DELIMITER + str(parent_cid) + DELIMITER + "end"
+            for child_svc in children:
                 out_sum = 0
                 child_list = list()
                 for child_cid in range(flags.NUM_CLUSTER):
-                    child_start_node = child_span.svc_name +DELIMITER + str(child_cid) + DELIMITER+"start"
+                    child_start_node = child_svc +DELIMITER + str(child_cid) + DELIMITER+"start"
                     child_list.append(child_start_node)
                     out_sum += aggregated_load.sum(end_node, child_start_node)
                 node_flow = model.addConstr((gp.quicksum(aggregated_load.select('*', end_node)) == out_sum), name="flow_conservation["+end_node+"]-nonleaf_endnode")
@@ -988,13 +1000,13 @@ else:
         
     ## Performance log write
     ## old
-    # print("@@, App, num_constr, num_gurobi_var, compute_arc_var_name_list, network_arc_var_name_list, NUM_CLUSTER, depth, total_num_svc, fan_out_degree, no_child_constant, regressor_degree,  optimizer_runtime, solve_runtime")
+    # print("@@, App, num_constr, num_gurobi_var, compute_arc_var_name_list, network_arc_var_name_list, NUM_CLUSTER, depth, total_num_svc, fan_out_degree, no_child_constant, REGRESSOR_DEGREE,  optimizer_runtime, solve_runtime")
     
     ## new
-    # print("@@, app_name, num_constr, num_gurobi_var, compute_arc_var_name_list, network_arc_var_name_list, NUM_CLUSTER, total_num_svc, regressor_degree, optimizer_runtime, solve_runtime")
+    # print("@@, app_name, num_constr, num_gurobi_var, compute_arc_var_name_list, network_arc_var_name_list, NUM_CLUSTER, total_num_svc, REGRESSOR_DEGREE, optimizer_runtime, solve_runtime")
     
     print("@@, ",end="")
-    print(app_name + "," +             str(num_constr) + "," +             str(num_var) + "," +             str(len(compute_arc_var_name_list)) + "," +             str(len(network_arc_var_name_list)) + "," +             str(flags.NUM_CLUSTER) + "," +             str(len(only_one_unique_dag)) + "," +             str(flags.regressor_degree) + "," +             str(optimizer_runtime) + "," +             str(solve_runtime) + ",",             end="")
+    print(app_name + "," +str(num_constr) + "," +str(num_var) + "," +str(len(compute_arc_var_name_list)) + "," +str(len(network_arc_var_name_list)) + "," +str(flags.NUM_CLUSTER) + "," +str(len(unique_services)) + "," +str(flags.REGRESSOR_DEGREE) + "," +str(optimizer_runtime) + "," +str(solve_runtime) + ",",end="")
             # str(flags.fan_out_degree) + "," + \
             # str(flags.no_child_constant) + "," + \
             # str(flags.depth) + "," + \
