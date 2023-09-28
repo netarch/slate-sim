@@ -55,31 +55,26 @@ def file_read(path_):
 
 
 class Span:
-    def __init__(self, svc, my_span_id, parent_span_id, st, et, load, cs, cluster_id):
-        self.svc_name = svc
-        self.child_spans = list()
-        self.cluster_id = cluster_id
-        self.name_cid = self.svc_name+"#"+str(self.cluster_id)
-        self.root = (parent_span_id=="")
-        
+    def __init__(self, svc_name, trace_id, my_span_id, parent_span_id, st, et, load, cs, cluster_id):
+        self.svc_name = svc_name
         self.my_span_id = my_span_id
         self.parent_span_id = parent_span_id
-        
-        self.call_size = cs
-        
+        self.trace_id = trace_id
+        self.cluster_id = cluster_id
+        self.load = load
         self.st = st
         self.et = et
         self.rt = et - st
         self.xt = 0
-        self.load = load
-        
+        self.cpt = list() # critical path time
+        self.child_spans = list()
+        self.critical_child_spans = list()
+        self.critical_time = 0
+        self.call_size = cs
         self.depth = 0 # ingress gw's depth: 0, frontend's depth: 1
     
-    def set_callsize(self, cs):
-        self.call_size = cs
-    
     def __str__(self):
-        return f"SPAN {self.svc_name}, cid({self.cluster_id}), span({self.my_span_id}), parent_span({self.parent_span_id}), load({self.load}), rt({self.rt}), xt({self.xt}), callsize({self.call_size})"
+        return f"SPAN {self.svc_name}, cid({self.cluster_id}), span({self.my_span_id}), parent_span({self.parent_span_id}), load({self.load}), st({self.st}), et({self.et}), rt({self.rt}), xt({self.xt}), ct({self.critical_time}) callsize({self.call_size})"
         
 SPAN_DELIM = " "
 SPAN_TOKEN_LEN = 5
@@ -93,7 +88,7 @@ def parse_and_create_span(line, svc, load):
     psid = tokens[2]
     st = int(tokens[3])
     et = int(tokens[4])
-    span = Span(svc, sid, psid, st, et, load, -10, -1)
+    span = Span(svc, tid, sid, psid, st, et, load, -10, -1)
     return tid, span
 
 DE_in_log=" "
@@ -107,8 +102,8 @@ min_len_tokens = 4
 ## Old
 svc_kw_idx = -2
 load_kw_idx = -1
-
 NUM_CLUSTER = 2
+
 def parse(lines):
     traces_ = dict() # nested dictionary. key for outer dict: trace_id, key for inner dict: service name, value: Span object
     filtered_lines = list()
@@ -118,7 +113,6 @@ def parse(lines):
         if len(token) >= min_len_tokens:
             if token[info_kw_idx] == info_kw:
                 try:
-                    
                     ####################################################
                     ## New
                     # service_name = token[svc_kw_idx][:-2]
@@ -139,6 +133,7 @@ def parse(lines):
                             if lines[idx+1] == "\n": # or len(lines[i+1]) == 1:
                                 break
                             tid, span = parse_and_create_span(lines[idx], service_name, load_per_tick)
+                            # TODO: The updated trace file is needed.
                             if tid not in traces_:
                                 traces_[tid] = dict()
                             if service_name not in traces_[tid]:
@@ -148,7 +143,6 @@ def parse(lines):
                                     print_log("!!! WARNING !!!, " + service_name + " already exists in trace["+tid+"]")
                                 else:
                                     print_error(service_name + " already exists in trace["+tid+"]")
-                                
                             # print(str(span.my_span_id) + " is added to " + tid + "len, "+ str(len(traces_[tid])))
                             filtered_lines.append(lines[idx])
                     #######################################################
@@ -281,6 +275,8 @@ def print_dag(single_dag_):
             print("{}({})->{}({})".format(parent_span.svc_name, parent_span.my_span_id, child_span.svc_name, child_span.my_span_id))
             
 '''
+Logical callgraph: A->B, A->C
+
 parallel-1
     ----------------------A
         -----------B
@@ -289,6 +285,10 @@ parallel-2
     ----------------------A
         --------B
              ---------C
+sequential
+    ----------------------A
+        -----B
+                 -----C
 '''
 def is_parallel_execution(span_a, span_b):
     assert span_a.parent_span_id == span_b.parent_span_id
@@ -342,8 +342,6 @@ def traces_to_graphs(traces_):
     print(f"{log_prefix} Call graph: {callgraph}")
     return callgraph, graph_dict
 
-
-
         
 def set_depth_of_span(cg, parent_svc, children, depth_d, prev_dep):
     if len(children) == 0:
@@ -355,6 +353,22 @@ def set_depth_of_span(cg, parent_svc, children, depth_d, prev_dep):
             # print(f"{log_prefix} Service {child_svc}, depth, {depth_d[child_svc]}")
         set_depth_of_span(cg, child_svc, cg[child_svc], depth_d, prev_dep+1)
 
+
+def critical_path_analysis(parent_span):
+    sorted_children = sorted(parent_span.child_spans, key=lambda x: x.et, reverse=True)
+    assert len(parent_span.critical_child_spans) == 0
+    cur_end_time = parent_span.et
+    total_critical_children_time = 0
+    for child_span in sorted_children:
+        if child_span.et < cur_end_time:
+            parent_span.critical_child_spans.append(child_span)
+            total_critical_children_time += child_span.rt
+            cur_end_time = child_span.st
+    parent_span.critical_time = parent_span.rt - total_critical_children_time
+    # print(" ==== " + str(parent_span) + " ==== ")
+    # for child_span in sorted_children:
+    #     print(child_span)
+    
 
 def exclusive_time(single_trace_):
     for svc, parent_span in single_trace_.items():
@@ -373,10 +387,9 @@ def exclusive_time(single_trace_):
                     if is_parallel == 1 or is_parallel == 2: # parallel execution
                         # TODO: parallel-1 and parallel-2 should be dealt with individually.
                         exclude_child_rt = max(child_span_list[i].rt, child_span_list[j].rt)
-                        # print("parent: {}, child_1: {}, child_2: {}, parallel-{} sibling".format(parent_span.svc_name, child_span_list[i].svc_name, child_span_list[j].svc_name, is_parallel))
-                    else: # sequential execution
+                    else: 
+                        # sequential execution
                         exclude_child_rt = child_span_list[i].rt + child_span_list[j].rt
-                        # print("parent: {}, child_1:{}, child_2: {}, sequential sibling".format(parent_span.svc_name, child_span_list[i].svc_name, child_span_list[j].svc_name))
         parent_span.xt = parent_span.rt - exclude_child_rt
         print(f"Service: {parent_span.svc_name}, Response time: {parent_span.rt}, Exclude_child_rt: {exclude_child_rt}, Exclusive time: {parent_span.xt}")
         if parent_span.xt < 0.0:
@@ -539,6 +552,11 @@ def stitch_time(log_path):
             set_depth_of_span(call_graph, parent_svc, children, depth_dict, frontend_depth)
     print(f"{log_prefix} Depth {depth_dict}")
     inject_arbitrary_callsize(traces, depth_dict)
+    
+    for tid, single_trace in traces.items():
+        print(f"{log_prefix} Critical Path Analysis")
+        for svc, span in single_trace.items():
+            critical_path_analysis(span)
     print(f"{log_prefix} Graph dict: {graph_dict}")
     print(f"{log_prefix} Call graph: {call_graph}")
     assert len(graph_dict) == 1
