@@ -36,6 +36,7 @@ random.seed(1234)
 
 VERBOSITY=1
 DELIMITER="#"
+OUTPUT_WRITE=True
 
 INGRESS_GW_NAME = "ingress_gw"
 # ENTRANCE = tst.FRONTEND_svc
@@ -214,39 +215,32 @@ network_arc_var_name
 '''
 network_arc_var_name = dict()
 for parent_svc, children in callgraph.items():
-    # leaf service to dst
     if len(children) == 0: # leaf service
+        # leaf service to dst
         print(parent_svc + " is leaf service")
         for src_cid in range(flags.NUM_CLUSTER):
             tuple_var_name = spans_to_network_arc_var_name(parent_svc, src_cid, destination_name, "*")
             if tuple_var_name not in network_arc_var_name:
-                network_arc_var_name[tuple_var_name] = 0
+                network_arc_var_name[tuple_var_name] = 0 # arbitrary call size
     for child_svc in children:
-        ##################################################
-        # if parent_svc == tst.FRONTEND_svc:
-        # if parent_svc == INGRESS_GW_NAME:
         if parent_svc == ENTRANCE:
-        ##################################################
-            # src to frontend service
             for src_cid in range(flags.NUM_CLUSTER):
+                # src to ingress gateway
                 tuple_var_name = spans_to_network_arc_var_name(source_name, "*", parent_svc, src_cid)
                 if tuple_var_name not in network_arc_var_name:
-                    network_arc_var_name[tuple_var_name] = 0
-                # frontend to service
+                    network_arc_var_name[tuple_var_name] = 0 # arbitrary call size
                 for dst_cid in range(flags.NUM_CLUSTER):
                     tuple_var_name = spans_to_network_arc_var_name(parent_svc, src_cid, child_svc, dst_cid)
                     if tuple_var_name not in network_arc_var_name:
-                        if parent_svc == INGRESS_GW_NAME:
-                            network_arc_var_name[tuple_var_name] = 100*10
-                        else:
-                            network_arc_var_name[tuple_var_name] = depth_dict[parent_svc]*10
-        # service to service
+                        # ingress gateway to frontend service
+                        network_arc_var_name[tuple_var_name] = 1 # arbitrary call size
         else:
+            # service to service
             for src_cid in range(flags.NUM_CLUSTER):
                 for dst_cid in range(flags.NUM_CLUSTER):
                     tuple_var_name = spans_to_network_arc_var_name(parent_svc, src_cid, child_svc, dst_cid)
                     if tuple_var_name not in network_arc_var_name:
-                        network_arc_var_name[tuple_var_name] = depth_dict[parent_svc]*10
+                        network_arc_var_name[tuple_var_name] = depth_dict[parent_svc]*10 # arbitrary call size
 print("len(network_arc_var_name)")
 print(len(network_arc_var_name))
 for tuple_var_name, _ in network_arc_var_name.items():
@@ -522,14 +516,12 @@ for network_arc_var in network_arc_var_name_list:
             dst_cid = int(dst_node.split(DELIMITER)[1])
         except:
             print_log(dst_svc_name, dst_node, dst_node.split(DELIMITER))
-        # local routing
-        # no egress charge on local routing
-        # if src_cid % flags.NUM_CLUSTER == dst_cid % flags.NUM_CLUSTER:
         if src_cid == dst_cid:
+            # local routing
             min_network_egress_cost.append(0) 
             max_network_egress_cost.append(0)
-        # remote routing
         else:
+            # remote routing
             min_network_egress_cost.append(network_arc_var_name[network_arc_var])
             max_network_egress_cost.append(network_arc_var_name[network_arc_var])
 
@@ -714,7 +706,8 @@ if objective == "latency":
 elif objective == "egress_cost":
     model.setObjective(total_egress_sum, gp.GRB.MINIMIZE)
 elif objective == "multi-objective":
-    model.setObjective(total_latency_sum*50 + total_egress_sum*50, gp.GRB.MINIMIZE)
+    dollar_per_millisecond = 0.0001 # NOTE: higher dollar per millisecond, more important the latency
+    model.setObjective((dollar_per_millisecond*total_latency_sum) + total_egress_sum, gp.GRB.MINIMIZE)
 else:
     print_error("unsupported objective, ", objective)
     
@@ -880,7 +873,8 @@ LOG_TIMESTAMP("gurobi add constraints and model update")
 varInfo = [(v.varName, v.LB, v.UB) for v in model.getVars() ]
 df_var = pd.DataFrame(varInfo) # convert to pandas dataframe
 df_var.columns=['Variable Name','LB','UB'] # Add column headers
-df_var.to_csv(OUTPUT_DIR+datetime.datetime.now().strftime("%Y%m%d_%H:%M:%S") +"-variable.csv")
+if OUTPUT_WRITE:
+    df_var.to_csv(OUTPUT_DIR+datetime.datetime.now().strftime("%Y%m%d_%H:%M:%S") +"-variable.csv")
 with pd.option_context('display.max_colwidth', None):
     with pd.option_context('display.max_rows', None):
         display(df_var)
@@ -889,7 +883,8 @@ with pd.option_context('display.max_colwidth', None):
 constrInfo = [(c.constrName, model.getRow(c), c.Sense, c.RHS) for c in model.getConstrs() ]
 df_constr = pd.DataFrame(constrInfo)
 df_constr.columns=['Constraint Name','Constraint equation', 'Sense','RHS']
-df_constr.to_csv(OUTPUT_DIR+datetime.datetime.now().strftime("%Y%m%d_%H:%M:%S") +"-constraint.csv")
+if OUTPUT_WRITE:
+    df_constr.to_csv(OUTPUT_DIR+datetime.datetime.now().strftime("%Y%m%d_%H:%M:%S") +"-constraint.csv")
 with pd.option_context('display.max_colwidth', None):
     with pd.option_context('display.max_rows', None):
         display(df_constr)
@@ -987,13 +982,13 @@ else:
     print("** model.objVal / total num requests: ", model.objVal/TOTAL_NUM_REQUEST)
     
     app_name = "bookinfo"
-    OUTPUT_WRITE=True
+    request_flow = pd.DataFrame(columns=["From", "To", "Flow"])
+    for arc in arcs:
+        if aggregated_load[arc].x > 1e-6:
+            temp = pd.DataFrame({"From": [arc[0]], "To": [arc[1]], "Flow": [aggregated_load[arc].x]})
+            request_flow = pd.concat([request_flow, temp], ignore_index=True)
+    display(request_flow)
     if OUTPUT_WRITE:
-        request_flow = pd.DataFrame(columns=["From", "To", "Flow"])
-        for arc in arcs:
-            if aggregated_load[arc].x > 1e-6:
-                temp = pd.DataFrame({"From": [arc[0]], "To": [arc[1]], "Flow": [aggregated_load[arc].x]})
-                request_flow = pd.concat([request_flow, temp], ignore_index=True)
         now = datetime.datetime.now()
         request_flow.to_csv(OUTPUT_DIR + now.strftime("%Y%m%d_%H:%M:%S") + "-"+app_name+"-model_solution.csv")
         LOG_TIMESTAMP("file write model output")
@@ -1020,12 +1015,119 @@ else:
 # In[52]:
 
 
+def translate_to_percentage(df_req_flow):
+    src_list = list()
+    dst_list = list()
+    src_cid_list = list()
+    dst_cid_list = list()
+    flow_list = list()
+    edge_name_list = list()
+    edge_dict = dict()
+    for index, row in df_req_flow.iterrows():
+        src_svc = row["From"].split(DELIMITER)[0]
+        dst_svc = row["To"].split(DELIMITER)[0]
+        src_cid = row["From"].split(DELIMITER)[1]
+        dst_cid = row["To"].split(DELIMITER)[1]
+        src_node_type = row["From"].split(DELIMITER)[2]
+        dst_node_type = row["To"].split(DELIMITER)[2]
+        if src_svc == source_name or dst_svc == destination_name or (src_node_type == "end" and dst_node_type == "start"):
+            print(src_svc)
+            if src_svc != source_name:
+                src_cid = int(src_cid)
+            if dst_svc != destination_name:
+                dst_cid = int(dst_cid)
+            src_list.append(src_svc)
+            dst_list.append(dst_svc)
+            src_cid_list.append(src_cid)
+            dst_cid_list.append(dst_cid)
+            flow_list.append(int(row["Flow"]))
+            edge_name = src_svc+","+dst_svc
+            edge_name_list.append(edge_name)
+            if edge_name not in edge_dict:
+                edge_dict[edge_name] = list()
+            edge_dict[edge_name].append([src_cid,dst_cid,row["Flow"]])
+    percentage_df = pd.DataFrame(
+        data={
+            "src": src_list,
+            "dst": dst_list, 
+            "src_cid": src_cid_list,
+            "dst_cid": dst_cid_list,
+            "flow": flow_list,
+        },
+    )
+    return percentage_df
+    
+percentage_df = translate_to_percentage(request_flow)
+display(percentage_df)
+
+
+# In[52]:
+
 GRAPHVIZ=True
+
 if GRAPHVIZ and model.Status == GRB.OPTIMAL:
     g_ = graphviz.Digraph()
     # The node() method takes a name identifier as first argument and an optional label.
     # The edge() method takes the names of start node and end node
-    print_all = True
+    node_pw = "1"
+    edge_pw = "0.5"
+    fs = "8"
+    edge_fs_0 = "10"
+    edge_fs_1 = "5"
+    local_routing_edge_color = "black"
+    remote_routing_edge_color = "blue"
+    fn="times bold italic"
+    edge_arrowsize="0.5"
+    edge_minlen="1"
+    src_and_dst_node_color = "#8587a8" # Gray
+    node_color = ["#FFBF00", "#ff6375", "#6973fa", "#AFE1AF"] # yellow, pink, blue, green
+    # node_color = ["#ff0000","#ff7f00","#ffff00","#7fff00","#00ff00","#00ff7f","#00ffff","#007fff","#0000ff","#7f00ff"] # rainbow
+    name_cut = 6
+    total_num_remote_routing = 0
+    for index, row in percentage_df.iterrows():
+        src_cid = row["src_cid"]
+        dst_cid = row["dst_cid"]
+        src_svc = row["src"]
+        dst_svc = row["dst"]
+        if src_cid == '*' or  dst_cid == '*':
+            edge_color = "black"
+        else:
+            if src_cid == dst_cid:
+                edge_color =  local_routing_edge_color # local routing
+            else:
+                edge_color = remote_routing_edge_color # remote routing
+        if src_cid == "*":
+            src_node_color = src_and_dst_node_color
+        else:
+            src_node_color = node_color[src_cid]
+        if dst_cid == '*':
+            dst_node_color = src_and_dst_node_color
+        else:
+            dst_node_color = node_color[dst_cid]
+        
+        src_node_name = src_svc+str(src_cid)
+        dst_node_name = dst_svc+str(dst_cid)
+        g_.node(name=src_node_name, label=src_svc[:name_cut], shape='circle', style='filled', fillcolor=src_node_color, penwidth=node_pw, fontsize=fs, fontname=fn, fixedsize="True", width="0.5")
+        
+        g_.node(name=dst_node_name, label=dst_svc[:name_cut], shape='circle', style='filled', fillcolor=dst_node_color, penwidth=node_pw, fontsize=fs, fontname=fn, fixedsize="True", width="0.5")
+        
+        g_.edge(src_node_name, dst_node_name, label=str(row["flow"]), penwidth=edge_pw, style="filled", fontsize=edge_fs_0, fontcolor=edge_color, color=edge_color, arrowsize=edge_arrowsize, minlen=edge_minlen)
+            
+        if src_cid != dst_cid:
+            total_num_remote_routing += row["flow"]
+            
+    print("** total_num_remote_routing: ", total_num_remote_routing)
+    print("*"*50)   
+    now =datetime .datetime.now()
+    g_.render(OUTPUT_DIR + now.strftime("%Y%m%d_%H:%M:%S") + "_" + app_name+ '_call_graph', view = True) # output: call_graph.pdf
+    g_
+    
+
+## Outdated
+if False and GRAPHVIZ and model.Status == GRB.OPTIMAL:
+    g_ = graphviz.Digraph()
+    # The node() method takes a name identifier as first argument and an optional label.
+    # The edge() method takes the names of start node and end node
     node_pw = "1"
     edge_pw = "0.5"
     fs = "8"
@@ -1041,54 +1143,51 @@ if GRAPHVIZ and model.Status == GRB.OPTIMAL:
     # node_color = ["#ff0000","#ff7f00","#ffff00","#7fff00","#00ff00","#00ff7f","#00ffff","#007fff","#0000ff","#7f00ff"] # rainbow
     name_cut = 4
     total_num_remote_routing = 0
-    if print_all:
-        for repl_name, v in aggregated_load.items():
-            src_replica_id = repl_name[0].split(DELIMITER)[1]
-            dst_replica_id = repl_name[1].split(DELIMITER)[1]
-            remote_routing = False
-            if src_replica_id == '*' and dst_replica_id == '*':
-                edge_color = "black"
-                src_cid = -1
-                dst_cid = -1
-            elif src_replica_id == '*' and dst_replica_id != '*':
-                edge_color = "black"
-                src_cid = -1
-                dst_cid = int(dst_replica_id) % flags.NUM_CLUSTER
-            elif src_replica_id != '*' and dst_replica_id == '*':
-                edge_color = "black"
-                src_cid = int(src_replica_id) % flags.NUM_CLUSTER
-                dst_cid = -1
+    for repl_name, v in aggregated_load.items():
+        src_replica_id = repl_name[0].split(DELIMITER)[1]
+        dst_replica_id = repl_name[1].split(DELIMITER)[1]
+        remote_routing = False
+        if src_replica_id == '*' and dst_replica_id == '*':
+            edge_color = "black"
+            src_cid = -1
+            dst_cid = -1
+        elif src_replica_id == '*' and dst_replica_id != '*':
+            edge_color = "black"
+            src_cid = -1
+            dst_cid = int(dst_replica_id) % flags.NUM_CLUSTER
+        elif src_replica_id != '*' and dst_replica_id == '*':
+            edge_color = "black"
+            src_cid = int(src_replica_id) % flags.NUM_CLUSTER
+            dst_cid = -1
+        else:
+            src_cid = int(src_replica_id) % flags.NUM_CLUSTER
+            dst_cid = int(dst_replica_id) % flags.NUM_CLUSTER
+            if src_cid == dst_cid:
+                edge_color =  local_routing_edge_color# local routing
             else:
-                src_cid = int(src_replica_id) % flags.NUM_CLUSTER
-                dst_cid = int(dst_replica_id) % flags.NUM_CLUSTER
-                if src_cid == dst_cid:
-                    edge_color =  local_routing_edge_color# local routing
-                else:
-                    edge_color = remote_routing_edge_color # remote routing
-                    remote_routing = True
-            if repl_name[0] in request_flow["From"].to_list() and repl_name[1] in request_flow["To"].to_list():
-                if src_cid == -1:
-                    src_node_color = src_and_dst_node_color
-                else:
-                    src_node_color = node_color[src_cid]
-                if dst_cid == -1:
-                    dst_node_color = src_and_dst_node_color
-                else:
-                    dst_node_color = node_color[src_cid]
-                g_.node(name=repl_name[0], label=repl_name[0][:name_cut], shape='circle', style='filled', fillcolor=src_node_color, penwidth=node_pw, fontsize=fs, fontname=fn, fixedsize="True", width="0.5")
-                g_.node(name=repl_name[1], label=repl_name[1][:name_cut], shape='circle', style='filled', fillcolor=dst_node_color, penwidth=node_pw, fontsize=fs, fontname=fn, fixedsize="True", width="0.5")
-            temp = request_flow[request_flow["From"]==repl_name[0]]
-            temp = temp[temp["To"]==repl_name[1]]
-            if len(temp) > 0:
-                if remote_routing:
-                    total_num_remote_routing += temp["Flow"].to_list()[0]
-                g_.edge(repl_name[0], repl_name[1], label=str(int(temp["Flow"].to_list()[0])), penwidth=edge_pw, style="filled", fontsize=edge_fs_0, fontcolor=edge_color, color=edge_color, arrowsize=edge_arrowsize, minlen=edge_minlen)
+                edge_color = remote_routing_edge_color # remote routing
+                remote_routing = True
+        if repl_name[0] in request_flow["From"].to_list() and repl_name[1] in request_flow["To"].to_list():
+            if src_cid == -1:
+                src_node_color = src_and_dst_node_color
+            else:
+                src_node_color = node_color[src_cid]
+            if dst_cid == -1:
+                dst_node_color = src_and_dst_node_color
+            else:
+                dst_node_color = node_color[src_cid]
+            g_.node(name=repl_name[0], label=repl_name[0][:name_cut], shape='circle', style='filled', fillcolor=src_node_color, penwidth=node_pw, fontsize=fs, fontname=fn, fixedsize="True", width="0.5")
+            g_.node(name=repl_name[1], label=repl_name[1][:name_cut], shape='circle', style='filled', fillcolor=dst_node_color, penwidth=node_pw, fontsize=fs, fontname=fn, fixedsize="True", width="0.5")
+        temp = request_flow[request_flow["From"]==repl_name[0]]
+        temp = temp[temp["To"]==repl_name[1]]
+        if len(temp) > 0:
+            if remote_routing:
+                total_num_remote_routing += temp["Flow"].to_list()[0]
+            g_.edge(repl_name[0], repl_name[1], label=str(int(temp["Flow"].to_list()[0])), penwidth=edge_pw, style="filled", fontsize=edge_fs_0, fontcolor=edge_color, color=edge_color, arrowsize=edge_arrowsize, minlen=edge_minlen)
     print("** total_num_remote_routing: ", total_num_remote_routing)
     print("*"*50)   
 
     now =datetime .datetime.now()
     g_.render(OUTPUT_DIR + now.strftime("%Y%m%d_%H:%M:%S") + "_" + app_name+ '_call_graph', view = True) # output: call_graph.pdf
     g_
-
-
 # %%
