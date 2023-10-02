@@ -27,8 +27,8 @@ import matplotlib.pyplot as plt
 import argparse
 from pprint import pprint
 from IPython.display import display
-
 import time_stitching as tst
+import zlib
 
 OUTPUT_DIR = "./optimizer_output/"
 
@@ -48,8 +48,6 @@ LOAD_IN = True
 ALL_PRODUCTPAGE=False
 REAL_DATA=False
 REGRESSOR_DEGREE = 1 # 1: linear, >2: polynomial
-
-DUMMY_CALLSIZE=10
 
 timestamp_list = list()
 temp_timestamp_list = list()
@@ -139,8 +137,6 @@ if flags.NUM_REQUEST == None:
 
 ## In[31]:
 
-# TRACE_LOG_PATH = "./trace_and_load_log.txt"
-# TRACE_LOG_PATH = "./call-logs-sept-13.txt"
 traces, callgraph, depth_dict = tst.stitch_time(tst.LOG_PATH)
 
 
@@ -282,7 +278,7 @@ network_arc_var_name
 ## In[37]:
 
 load = list()
-compute_time = list()
+comp_t = list()
 service_name_ = list()
 index_ = list()
 cid_list = list()
@@ -295,7 +291,7 @@ if REAL_DATA:
             for svc_name, span in spans.items():
                 for cid in range(flags.NUM_CLUSTER):
                     load.append(span.load)
-                    compute_time.append(span.xt)
+                    comp_t.append(span.xt)
                     index_.append(span_to_compute_arc_var_name(span.svc_name, cid))
                     service_name_.append(span.svc_name)
                     cid_list.append(cid)
@@ -304,7 +300,7 @@ if REAL_DATA:
                         if span.svc_name == tst.FRONTEND_svc:
                             ###############################################
                             load.append(span.load)
-                            compute_time.append(0)
+                            comp_t.append(0)
                             ###############################################
                             index_.append(span_to_compute_arc_var_name(ENTRANCE, cid))
                             service_name_.append(ENTRANCE)
@@ -313,14 +309,14 @@ if REAL_DATA:
         for tid, spans in traces.items():
             for svc_name, span in spans.items():
                 load.append(span.load)
-                compute_time.append(span.xt)
+                comp_t.append(span.xt)
                 index_.append(span_to_compute_arc_var_name(span.svc_name, span.cluster_id))
                 service_name_.append(span.svc_name)
                 cid_list.append(span.cluster_id)
                 if ENTRANCE == INGRESS_GW_NAME:
                     if span.svc_name == tst.FRONTEND_svc:
                         load.append(span.load)
-                        compute_time.append(0)
+                        comp_t.append(0)
                         index_.append(span_to_compute_arc_var_name(ENTRANCE, span.cluster_id))
                         service_name_.append(ENTRANCE)
                         cid_list.append(span.cluster_id)
@@ -335,11 +331,11 @@ if REAL_DATA:
 #                 service_name_.append(svc_name)
 #                 index_.append(span_to_compute_arc_var_name(svc_name, cid))
 #                 if svc_name == INGRESS_GW_NAME:
-#                     compute_time.append(0)
+#                     comp_t.append(0)
 #                 else:
 #                     slope=1
 #                     intercept=10
-#                     compute_time.append(pow(load[j],REGRESSOR_DEGREE)*slope + intercept)
+#                     comp_t.append(pow(load[j],REGRESSOR_DEGREE)*slope + intercept)
 
 ## New
 else:
@@ -351,30 +347,32 @@ else:
             load += list(np.arange(0,num_data_point))
             for j in range(num_data_point):
                 if svc_name == INGRESS_GW_NAME:
-                    ct = 0
-                # if svc_name == tst.FRONTEND_svc:
+                    slope = 0
+                    intercept = 0
                 else:
                     if SAME_COMPUTE_TIME:
                         slope = 1
                         intercept = 10
                     else:
-                        slope = hash(svc_name)%5
+                        # slope = hash(svc_name)%5 # bug... hash function is NOT deterministic
+                        slope = zlib.adler32(svc_name.encode('utf-8'))%5+1
                         intercept = 10
-                    ct = pow(load[j],REGRESSOR_DEGREE)*slope + intercept
+                ct = pow(load[j],REGRESSOR_DEGREE)*slope + intercept
                 comptime.append(ct)
                 ld.append(load[j])
-                compute_time.append(ct)
+                comp_t.append(ct)
                 cid_list.append(cid)
                 service_name_.append(svc_name)
                 index_.append(span_to_compute_arc_var_name(svc_name, cid))
-            print(f"service,{svc_name}, load,{ld}, compute time,{comptime}, degree({REGRESSOR_DEGREE}), slope({slope}), intercept({intercept})")
-            print()
+            # print(f"service,{svc_name}, load,{ld}, compute time,{comptime}, degree({REGRESSOR_DEGREE}), slope({slope}), intercept({intercept})")
+            print(f"service,{svc_name}, degree({REGRESSOR_DEGREE}), slope({slope}), intercept({intercept})")
+        print()
 
 compute_time_observation = pd.DataFrame(
     data={
         "service_name": service_name_,
         "load": load, 
-        "compute_time": compute_time,
+        "compute_time": comp_t,
         "cluster_id": cid_list,
     },
     index=index_
@@ -418,14 +416,10 @@ for cid in range(flags.NUM_CLUSTER):
         for i in range(len(temp_x)):
             temp_x.iloc[i, 0] = i
         #############################################
-        # max_load[svc_name] = max(X["load"])+100
-        # max_compute_time[svc_name] = max(y)+1000
-        # max_load[svc_name] = 1000000
-        # max_load[svc_name] = sum(flags.NUM_REQUEST)
-        if ENTRANCE == INGRESS_GW_NAME and svc_name == ENTRANCE:
-            max_compute_time[svc_name] = 0
-        else:
-            max_compute_time[svc_name] = 1000000
+        # if ENTRANCE == INGRESS_GW_NAME and svc_name == ENTRANCE:
+        #     max_compute_time[svc_name] = 0
+        # else:
+        #     max_compute_time[svc_name] = 1000000
         #############################################
         X_train, X_test, y_train, y_test = train_test_split(
             X, y, train_size=0.9, random_state=1
@@ -570,7 +564,7 @@ for svc_name in unique_services:
             "min_load":[min_load] * len(per_service_compute_arc[svc_name]),
             "max_load":[max_load] * len(per_service_compute_arc[svc_name]),
             "min_compute_time": [0] * len(per_service_compute_arc[svc_name]),
-            "max_compute_time": [max_compute_time[svc_name]] * len(per_service_compute_arc[svc_name]),
+            # "max_compute_time": [max_compute_time[svc_name]] * len(per_service_compute_arc[svc_name]),
         },
         index=per_service_compute_arc[svc_name]
     )
@@ -642,7 +636,8 @@ compute_time = dict()
 compute_load = dict()
 for svc_name in unique_services:
     print_log(svc_name)
-    compute_time[svc_name] = gppd.add_vars(model, compute_time_data[svc_name], name="compute_time", lb="min_compute_time", ub="max_compute_time")
+    # compute_time[svc_name] = gppd.add_vars(model, compute_time_data[svc_name], name="compute_time", lb="min_compute_time", ub="max_compute_time")
+    compute_time[svc_name] = gppd.add_vars(model, compute_time_data[svc_name], name="compute_time", lb="min_compute_time")
     compute_load[svc_name] = gppd.add_vars(model, compute_time_data[svc_name], name="load_for_compute_edge", lb="min_load", ub="max_load")
     # compute_time[svc_name] = gppd.add_vars(model, compute_time_data[svc_name], name="compute_time")
     # compute_load[svc_name] = gppd.add_vars(model, compute_time_data[svc_name], name="load_for_compute_edge")
@@ -706,8 +701,9 @@ if objective == "latency":
 elif objective == "egress_cost":
     model.setObjective(total_egress_sum, gp.GRB.MINIMIZE)
 elif objective == "multi-objective":
-    dollar_per_millisecond = 0.0001 # NOTE: higher dollar per millisecond, more important the latency
-    model.setObjective((dollar_per_millisecond*total_latency_sum) + total_egress_sum, gp.GRB.MINIMIZE)
+    dollar_per_millisecond = 0.00001 # NOTE: higher dollar per millisecond, more important the latency
+    # model.setObjective((dollar_per_millisecond*total_latency_sum) + total_egress_sum, gp.GRB.MINIMIZE)
+    model.setObjective(total_latency_sum + (total_egress_sum/dollar_per_millisecond), gp.GRB.MINIMIZE)
 else:
     print_error("unsupported objective, ", objective)
     
@@ -1001,7 +997,7 @@ else:
     # print("@@, app_name, num_constr, num_gurobi_var, compute_arc_var_name_list, network_arc_var_name_list, NUM_CLUSTER, total_num_svc, REGRESSOR_DEGREE, optimizer_runtime, solve_runtime")
     
     print("@@, ",end="")
-    print(app_name + "," +str(num_constr) + "," +str(num_var) + "," +str(len(compute_arc_var_name_list)) + "," +str(len(network_arc_var_name_list)) + "," +str(flags.NUM_CLUSTER) + "," +str(len(unique_services)) + "," +str(flags.REGRESSOR_DEGREE) + "," +str(optimizer_runtime) + "," +str(solve_runtime) + ",",end="")
+    print(app_name + "," +str(num_constr) + "," +str(num_var) + "," +str(len(compute_arc_var_name_list)) + "," +str(len(network_arc_var_name_list)) + "," +str(flags.NUM_CLUSTER) + "," +str(len(unique_services)) + "," +str(REGRESSOR_DEGREE) + "," +str(optimizer_runtime) + "," +str(solve_runtime) + ",",end="")
             # str(flags.fan_out_degree) + "," + \
             # str(flags.no_child_constant) + "," + \
             # str(flags.depth) + "," + \
@@ -1015,56 +1011,55 @@ else:
 # In[52]:
 
 
-def translate_to_percentage(df_req_flow):
-    src_list = list()
-    dst_list = list()
-    src_cid_list = list()
-    dst_cid_list = list()
-    flow_list = list()
-    edge_name_list = list()
-    edge_dict = dict()
-    for index, row in df_req_flow.iterrows():
-        src_svc = row["From"].split(DELIMITER)[0]
-        dst_svc = row["To"].split(DELIMITER)[0]
-        src_cid = row["From"].split(DELIMITER)[1]
-        dst_cid = row["To"].split(DELIMITER)[1]
-        src_node_type = row["From"].split(DELIMITER)[2]
-        dst_node_type = row["To"].split(DELIMITER)[2]
-        if src_svc == source_name or dst_svc == destination_name or (src_node_type == "end" and dst_node_type == "start"):
-            print(src_svc)
-            if src_svc != source_name:
-                src_cid = int(src_cid)
-            if dst_svc != destination_name:
-                dst_cid = int(dst_cid)
-            src_list.append(src_svc)
-            dst_list.append(dst_svc)
-            src_cid_list.append(src_cid)
-            dst_cid_list.append(dst_cid)
-            flow_list.append(int(row["Flow"]))
-            edge_name = src_svc+","+dst_svc
-            edge_name_list.append(edge_name)
-            if edge_name not in edge_dict:
-                edge_dict[edge_name] = list()
-            edge_dict[edge_name].append([src_cid,dst_cid,row["Flow"]])
-    percentage_df = pd.DataFrame(
-        data={
-            "src": src_list,
-            "dst": dst_list, 
-            "src_cid": src_cid_list,
-            "dst_cid": dst_cid_list,
-            "flow": flow_list,
-        },
-    )
-    return percentage_df
-    
-percentage_df = translate_to_percentage(request_flow)
-display(percentage_df)
+    def translate_to_percentage(df_req_flow):
+        src_list = list()
+        dst_list = list()
+        src_cid_list = list()
+        dst_cid_list = list()
+        flow_list = list()
+        edge_name_list = list()
+        edge_dict = dict()
+        for index, row in df_req_flow.iterrows():
+            src_svc = row["From"].split(DELIMITER)[0]
+            dst_svc = row["To"].split(DELIMITER)[0]
+            src_cid = row["From"].split(DELIMITER)[1]
+            dst_cid = row["To"].split(DELIMITER)[1]
+            src_node_type = row["From"].split(DELIMITER)[2]
+            dst_node_type = row["To"].split(DELIMITER)[2]
+            if src_svc == source_name or dst_svc == destination_name or (src_node_type == "end" and dst_node_type == "start"):
+                print(src_svc)
+                if src_svc != source_name:
+                    src_cid = int(src_cid)
+                if dst_svc != destination_name:
+                    dst_cid = int(dst_cid)
+                src_list.append(src_svc)
+                dst_list.append(dst_svc)
+                src_cid_list.append(src_cid)
+                dst_cid_list.append(dst_cid)
+                flow_list.append(int(row["Flow"]))
+                edge_name = src_svc+","+dst_svc
+                edge_name_list.append(edge_name)
+                if edge_name not in edge_dict:
+                    edge_dict[edge_name] = list()
+                edge_dict[edge_name].append([src_cid,dst_cid,row["Flow"]])
+        percentage_df = pd.DataFrame(
+            data={
+                "src": src_list,
+                "dst": dst_list, 
+                "src_cid": src_cid_list,
+                "dst_cid": dst_cid_list,
+                "flow": flow_list,
+            },
+        )
+        return percentage_df
+        
+    percentage_df = translate_to_percentage(request_flow)
+    display(percentage_df)
 
 
 # In[52]:
 
 GRAPHVIZ=True
-
 if GRAPHVIZ and model.Status == GRB.OPTIMAL:
     g_ = graphviz.Digraph()
     # The node() method takes a name identifier as first argument and an optional label.
@@ -1124,70 +1119,70 @@ if GRAPHVIZ and model.Status == GRB.OPTIMAL:
     
 
 ## Outdated
-if False and GRAPHVIZ and model.Status == GRB.OPTIMAL:
-    g_ = graphviz.Digraph()
-    # The node() method takes a name identifier as first argument and an optional label.
-    # The edge() method takes the names of start node and end node
-    node_pw = "1"
-    edge_pw = "0.5"
-    fs = "8"
-    edge_fs_0 = "10"
-    edge_fs_1 = "5"
-    local_routing_edge_color = "black"
-    remote_routing_edge_color = "blue"
-    fn="times bold italic"
-    edge_arrowsize="0.5"
-    edge_minlen="1"
-    src_and_dst_node_color = "#8587a8" # Gray
-    node_color = ["#FFBF00", "#ff6375", "#6973fa", "#AFE1AF"] # yellow, pink, blue, green
-    # node_color = ["#ff0000","#ff7f00","#ffff00","#7fff00","#00ff00","#00ff7f","#00ffff","#007fff","#0000ff","#7f00ff"] # rainbow
-    name_cut = 4
-    total_num_remote_routing = 0
-    for repl_name, v in aggregated_load.items():
-        src_replica_id = repl_name[0].split(DELIMITER)[1]
-        dst_replica_id = repl_name[1].split(DELIMITER)[1]
-        remote_routing = False
-        if src_replica_id == '*' and dst_replica_id == '*':
-            edge_color = "black"
-            src_cid = -1
-            dst_cid = -1
-        elif src_replica_id == '*' and dst_replica_id != '*':
-            edge_color = "black"
-            src_cid = -1
-            dst_cid = int(dst_replica_id) % flags.NUM_CLUSTER
-        elif src_replica_id != '*' and dst_replica_id == '*':
-            edge_color = "black"
-            src_cid = int(src_replica_id) % flags.NUM_CLUSTER
-            dst_cid = -1
-        else:
-            src_cid = int(src_replica_id) % flags.NUM_CLUSTER
-            dst_cid = int(dst_replica_id) % flags.NUM_CLUSTER
-            if src_cid == dst_cid:
-                edge_color =  local_routing_edge_color# local routing
-            else:
-                edge_color = remote_routing_edge_color # remote routing
-                remote_routing = True
-        if repl_name[0] in request_flow["From"].to_list() and repl_name[1] in request_flow["To"].to_list():
-            if src_cid == -1:
-                src_node_color = src_and_dst_node_color
-            else:
-                src_node_color = node_color[src_cid]
-            if dst_cid == -1:
-                dst_node_color = src_and_dst_node_color
-            else:
-                dst_node_color = node_color[src_cid]
-            g_.node(name=repl_name[0], label=repl_name[0][:name_cut], shape='circle', style='filled', fillcolor=src_node_color, penwidth=node_pw, fontsize=fs, fontname=fn, fixedsize="True", width="0.5")
-            g_.node(name=repl_name[1], label=repl_name[1][:name_cut], shape='circle', style='filled', fillcolor=dst_node_color, penwidth=node_pw, fontsize=fs, fontname=fn, fixedsize="True", width="0.5")
-        temp = request_flow[request_flow["From"]==repl_name[0]]
-        temp = temp[temp["To"]==repl_name[1]]
-        if len(temp) > 0:
-            if remote_routing:
-                total_num_remote_routing += temp["Flow"].to_list()[0]
-            g_.edge(repl_name[0], repl_name[1], label=str(int(temp["Flow"].to_list()[0])), penwidth=edge_pw, style="filled", fontsize=edge_fs_0, fontcolor=edge_color, color=edge_color, arrowsize=edge_arrowsize, minlen=edge_minlen)
-    print("** total_num_remote_routing: ", total_num_remote_routing)
-    print("*"*50)   
+# if GRAPHVIZ and model.Status == GRB.OPTIMAL:
+#     g_ = graphviz.Digraph()
+#     # The node() method takes a name identifier as first argument and an optional label.
+#     # The edge() method takes the names of start node and end node
+#     node_pw = "1"
+#     edge_pw = "0.5"
+#     fs = "8"
+#     edge_fs_0 = "10"
+#     edge_fs_1 = "5"
+#     local_routing_edge_color = "black"
+#     remote_routing_edge_color = "blue"
+#     fn="times bold italic"
+#     edge_arrowsize="0.5"
+#     edge_minlen="1"
+#     src_and_dst_node_color = "#8587a8" # Gray
+#     node_color = ["#FFBF00", "#ff6375", "#6973fa", "#AFE1AF"] # yellow, pink, blue, green
+#     # node_color = ["#ff0000","#ff7f00","#ffff00","#7fff00","#00ff00","#00ff7f","#00ffff","#007fff","#0000ff","#7f00ff"] # rainbow
+#     name_cut = 4
+#     total_num_remote_routing = 0
+#     for repl_name, v in aggregated_load.items():
+#         src_replica_id = repl_name[0].split(DELIMITER)[1]
+#         dst_replica_id = repl_name[1].split(DELIMITER)[1]
+#         remote_routing = False
+#         if src_replica_id == '*' and dst_replica_id == '*':
+#             edge_color = "black"
+#             src_cid = -1
+#             dst_cid = -1
+#         elif src_replica_id == '*' and dst_replica_id != '*':
+#             edge_color = "black"
+#             src_cid = -1
+#             dst_cid = int(dst_replica_id) % flags.NUM_CLUSTER
+#         elif src_replica_id != '*' and dst_replica_id == '*':
+#             edge_color = "black"
+#             src_cid = int(src_replica_id) % flags.NUM_CLUSTER
+#             dst_cid = -1
+#         else:
+#             src_cid = int(src_replica_id) % flags.NUM_CLUSTER
+#             dst_cid = int(dst_replica_id) % flags.NUM_CLUSTER
+#             if src_cid == dst_cid:
+#                 edge_color =  local_routing_edge_color# local routing
+#             else:
+#                 edge_color = remote_routing_edge_color # remote routing
+#                 remote_routing = True
+#         if repl_name[0] in request_flow["From"].to_list() and repl_name[1] in request_flow["To"].to_list():
+#             if src_cid == -1:
+#                 src_node_color = src_and_dst_node_color
+#             else:
+#                 src_node_color = node_color[src_cid]
+#             if dst_cid == -1:
+#                 dst_node_color = src_and_dst_node_color
+#             else:
+#                 dst_node_color = node_color[src_cid]
+#             g_.node(name=repl_name[0], label=repl_name[0][:name_cut], shape='circle', style='filled', fillcolor=src_node_color, penwidth=node_pw, fontsize=fs, fontname=fn, fixedsize="True", width="0.5")
+#             g_.node(name=repl_name[1], label=repl_name[1][:name_cut], shape='circle', style='filled', fillcolor=dst_node_color, penwidth=node_pw, fontsize=fs, fontname=fn, fixedsize="True", width="0.5")
+#         temp = request_flow[request_flow["From"]==repl_name[0]]
+#         temp = temp[temp["To"]==repl_name[1]]
+#         if len(temp) > 0:
+#             if remote_routing:
+#                 total_num_remote_routing += temp["Flow"].to_list()[0]
+#             g_.edge(repl_name[0], repl_name[1], label=str(int(temp["Flow"].to_list()[0])), penwidth=edge_pw, style="filled", fontsize=edge_fs_0, fontcolor=edge_color, color=edge_color, arrowsize=edge_arrowsize, minlen=edge_minlen)
+#     print("** total_num_remote_routing: ", total_num_remote_routing)
+#     print("*"*50)   
 
-    now =datetime .datetime.now()
-    g_.render(OUTPUT_DIR + now.strftime("%Y%m%d_%H:%M:%S") + "_" + app_name+ '_call_graph', view = True) # output: call_graph.pdf
-    g_
+#     now =datetime .datetime.now()
+#     g_.render(OUTPUT_DIR + now.strftime("%Y%m%d_%H:%M:%S") + "_" + app_name+ '_call_graph', view = True) # output: call_graph.pdf
+#     g_
 # %%
