@@ -46,7 +46,7 @@ if tst.PRODUCTPAGE_ONLY:
 SAME_COMPUTE_TIME = False
 LOAD_IN = True
 ALL_PRODUCTPAGE=False
-REAL_DATA=False
+REAL_DATA=True
 REGRESSOR_DEGREE = 1 # 1: linear, >2: polynomial
 
 timestamp_list = list()
@@ -287,39 +287,41 @@ cid_list = list()
 ############################
 if REAL_DATA:
     if SAME_COMPUTE_TIME:
-        for tid, spans in traces.items():
-            for svc_name, span in spans.items():
-                for cid in range(flags.NUM_CLUSTER):
+        for cid in traces:
+            for tid, spans in traces[cid].items():
+                for svc_name, span in spans.items():
+                    for cid in range(flags.NUM_CLUSTER):
+                        load.append(span.load)
+                        comp_t.append(span.xt)
+                        index_.append(span_to_compute_arc_var_name(span.svc_name, cid))
+                        service_name_.append(span.svc_name)
+                        cid_list.append(cid)
+                        ## Adding fake ingress gw latency/load data, same as frontend service
+                        if ENTRANCE == INGRESS_GW_NAME:
+                            if span.svc_name == tst.FRONTEND_svc:
+                                ###############################################
+                                load.append(span.load)
+                                comp_t.append(0)
+                                ###############################################
+                                index_.append(span_to_compute_arc_var_name(ENTRANCE, cid))
+                                service_name_.append(ENTRANCE)
+                                cid_list.append(cid)
+    else:
+        for cid in traces:
+            for tid, spans in traces[cid].items():
+                for svc_name, span in spans.items():
                     load.append(span.load)
                     comp_t.append(span.xt)
-                    index_.append(span_to_compute_arc_var_name(span.svc_name, cid))
+                    index_.append(span_to_compute_arc_var_name(span.svc_name, span.cluster_id))
                     service_name_.append(span.svc_name)
-                    cid_list.append(cid)
-                    ## Adding fake ingress gw latency/load data, same as frontend service
+                    cid_list.append(span.cluster_id)
                     if ENTRANCE == INGRESS_GW_NAME:
                         if span.svc_name == tst.FRONTEND_svc:
-                            ###############################################
                             load.append(span.load)
                             comp_t.append(0)
-                            ###############################################
-                            index_.append(span_to_compute_arc_var_name(ENTRANCE, cid))
+                            index_.append(span_to_compute_arc_var_name(ENTRANCE, span.cluster_id))
                             service_name_.append(ENTRANCE)
-                            cid_list.append(cid)
-    else:
-        for tid, spans in traces.items():
-            for svc_name, span in spans.items():
-                load.append(span.load)
-                comp_t.append(span.xt)
-                index_.append(span_to_compute_arc_var_name(span.svc_name, span.cluster_id))
-                service_name_.append(span.svc_name)
-                cid_list.append(span.cluster_id)
-                if ENTRANCE == INGRESS_GW_NAME:
-                    if span.svc_name == tst.FRONTEND_svc:
-                        load.append(span.load)
-                        comp_t.append(0)
-                        index_.append(span_to_compute_arc_var_name(ENTRANCE, span.cluster_id))
-                        service_name_.append(ENTRANCE)
-                        cid_list.append(span.cluster_id)
+                            cid_list.append(span.cluster_id)
 ## Original                   
 # else:
 #     num_data_point = 100
@@ -1006,10 +1008,6 @@ else:
             # flags.NUM_REQUEST, \
     prettyprint_timestamp()
     print_timestamp()
-
-
-# In[52]:
-
 
     def translate_to_percentage(df_req_flow):
         src_list = list()
