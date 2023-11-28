@@ -1,9 +1,9 @@
 app : three_depth
 load_balancer : RoundRobin
-routing_algorithm : LCLB
+routing_algorithm : moment_response_time
 c0_request_arrival_file : request_arrival/sample-request_arrival-cluster0.txt
 c1_request_arrival_file : request_arrival/sample-request_arrival-cluster1.txt
-workload : sample
+workload : smallsample
 fixed_autoscaler : 0
 autoscaler_period : 15000
 desired_autoscaler_metric : 0.2
@@ -15,7 +15,7 @@ inter_rack_network_latency : 0.5
 inter_zone_network_latency : 2
 close_inter_region_network_latency : 15
 far_inter_region_network_latency : 40
-ROUTING_ALGORITHM : LCLB
+ROUTING_ALGORITHM : moment_response_time
 MA_WINDOW_SIZE : 200
 WARMUP_SIZE : 200
 PROCESSING_TIME_SIGMA : 5
@@ -31,6 +31,6 @@ SCALE_DOWN_STABILIZE_WINDOW : 150000
 SCALE_DOWN_PERIOD : 15000
 SCALE_DOWN_STABILIZE_WINDOW_SIZE : 10.0
 CNT_DELAYED_ROUTING : 0
-CROSS_CLUSTER_ROUTING : {}
-start_time : 20230616_195111
-runtime : 127.04890489578247
+CROSS_CLUSTER_ROUTING : {1: 2190, 'User-1': 402, 'A-1': 1334, 'D-1': 454, 0: 13437, 'User-0': 907, 'A-0': 6903, 'D-0': 5627}
+start_time : 20230620_181131
+runtime : 233.6991798877716
