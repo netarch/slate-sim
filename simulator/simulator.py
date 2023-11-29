@@ -450,6 +450,7 @@ class Node:
         self.total_mcore = total_mcore_
         self.available_mcore = total_mcore_
         self.placed_replicas = dict() # {Replica: Num cores}
+        utils.print_log("DEBUG", "Node " + self.to_str() + " is created.")
         
     def place_replica_and_allocate_core(self, repl_, allocated_mcore_):
         if self.available_mcore < allocated_mcore_:
@@ -515,8 +516,18 @@ class Service:
             print("{}, {}, live repl,{}".format(self.name, cid, len(self.get_cluster_live_replica(cid))))
             for repl in self.get_cluster_live_replica(cid):
                 print("{}, received num request {}".format(repl.to_str(), repl.num_req))
-            print("other cluster live replica: {}".format(len(self.get_cluster_live_replica(0))))
-            exit()
+            if cid == 0:
+                other_cid = 1
+            elif cid == 1:
+                other_cid = 0
+            else:
+                utils.error_handling("Invalid cluster id: {}".format(cid))
+            print("other cluster-{}'s live replica: {}".format(other_cid, len(self.get_cluster_live_replica(0))))
+            ########
+            assert False
+            # exit()
+            # return 0
+            ########
         if metric == "avg":
             agg_v = sum(self.agg_pred_queue_time[cid].values())/len(self.agg_pred_queue_time[cid])
         elif metric == "min":
@@ -799,9 +810,9 @@ class Service:
             # It is circular referencing each other between replica object and service object.
             new_repl = Replica(service=self, id=next_replica_id)
             if cluster_id == 0:
-                target_node = node_0
+                target_node = nodes[0]
             else:
-                target_node = node_1
+                target_node = nodes[1]
             placement.place_replica_to_node_and_allocate_core(new_repl, target_node, 1000)
             if LOG_MACRO: utils.print_log("WARNING", "provision, new replica {} is created. ".format(new_repl.to_str()))
             next_replica_id += 2
@@ -950,6 +961,7 @@ class Service:
         #############################################################################
         if how_many_scale_down > len(filtered_replica_list):
             if LOG_MACRO: utils.print_log("INFO", "first planed scale down replica({}) > num live replica ({})".format(how_many_scale_down, len(filtered_replica_list)))
+            print("INFO", "first planed scale down replica({}) > num live replica ({})".format(how_many_scale_down, len(filtered_replica_list)))
             how_many_scale_down = len(filtered_replica_list) - 1 # BUG fixed. BUG 2: At least one replica should stay alive.
             if LOG_MACRO: utils.print_log("INFO", "Decrease how_many_scale_down to {}".format(len(filtered_replica_list)))
         final_scale_down_replica = list()
@@ -1583,7 +1595,7 @@ class Replica:
 class Simulator:
     def __init__(self, req_arr_0, req_arr_1, cur_time, arg_flags):
         self.millisecond_load = [dict(), dict()]
-        self.routing_weight = [dict(), dict()]
+        self.local_routing_weight = [dict(), dict()]
         self.routing_weight_log = list()
         
         self.queueing_function = dict()
@@ -1933,27 +1945,35 @@ class UpdateRoutingWeight(Event):
                 total_over = total_capa - total_load
                 c0_remaining_capa = simulator.service_capacity[0][svc] - simulator.millisecond_load[0][svc]
                 c1_remaining_capa = simulator.service_capacity[1][svc] - simulator.millisecond_load[1][svc]
-                c0_ccr = 0
-                c1_ccr = 0
+                c0_cross_cluster_routing_weight = 0
+                c1_cross_cluster_routing_weight = 0
+                #################################################
                 if c0_remaining_capa < 0 and c1_remaining_capa > 0:
-                    c0_ccr = min(abs(c0_remaining_capa), c1_remaining_capa)
-                    # c0_ccr = max(abs(c0_remaining_capa), c1_remaining_capa)
-                    simulator.routing_weight[0][svc] = (simulator.millisecond_load[0][svc] - c0_ccr)/simulator.millisecond_load[0][svc]
-                    simulator.routing_weight[1][svc] = 1.0
+                # if c1_remaining_capa > c0_remaining_capa:
+                    # simulator.local_routing_weight[0][svc] = 0.0 # This is local routing weight
+                    
+                    c0_cross_cluster_routing_weight = min(abs(c0_remaining_capa), c1_remaining_capa) ## Original code
+                    # c0_cross_cluster_routing_weight = max(abs(c0_remaining_capa), c1_remaining_capa)
+                    simulator.local_routing_weight[0][svc] = (simulator.millisecond_load[0][svc] - c0_cross_cluster_routing_weight)/simulator.millisecond_load[0][svc]
+                    simulator.local_routing_weight[1][svc] = 1.0
                 elif c0_remaining_capa > 0 and c1_remaining_capa < 0:
-                    c1_ccr = min(c0_remaining_capa, abs(c1_remaining_capa))
-                    # c1_ccr = max(c0_remaining_capa, abs(c1_remaining_capa))
-                    simulator.routing_weight[0][svc] = 1.0
-                    simulator.routing_weight[1][svc] = (simulator.millisecond_load[1][svc] - c1_ccr)/simulator.millisecond_load[1][svc]
+                # elif c0_remaining_capa > c1_remaining_capa:
+                    # simulator.local_routing_weight[1][svc] = 0.0
+                    
+                    c1_cross_cluster_routing_weight = min(c0_remaining_capa, abs(c1_remaining_capa)) ## Original code
+                    # c1_cross_cluster_routing_weight = max(c0_remaining_capa, abs(c1_remaining_capa))
+                    simulator.local_routing_weight[1][svc] = (simulator.millisecond_load[1][svc] - c1_cross_cluster_routing_weight)/simulator.millisecond_load[1][svc]
+                    simulator.local_routing_weight[0][svc] = 1.0
                 else:
-                    simulator.routing_weight[0][svc] = 1.0
-                    simulator.routing_weight[1][svc] = 1.0
+                    simulator.local_routing_weight[0][svc] = 1.0
+                    simulator.local_routing_weight[1][svc] = 1.0
+                #################################################
                 simulator.routing_weight_log.append("{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n".format(\
                         svc.name, \
-                        simulator.routing_weight[0][svc], \
-                        simulator.routing_weight[1][svc], \
-                        c0_ccr, \
-                        c1_ccr, \
+                        simulator.local_routing_weight[0][svc], \
+                        simulator.local_routing_weight[1][svc], \
+                        c0_cross_cluster_routing_weight, \
+                        c1_cross_cluster_routing_weight, \
                         simulator.service_capacity[0][svc], \
                         simulator.millisecond_load[0][svc], \
                         simulator.service_capacity[1][svc], \
@@ -1965,15 +1985,15 @@ class UpdateRoutingWeight(Event):
                         total_over))
                 # print(simulator.routing_weight_log[-1])
                 
-        if len(simulator.routing_weight_log) > 1000:
+        if len(simulator.local_routing_weight) > 1000:
             path = simulator.get_output_dir() + "/routing_weight_log.csv"
             if os.path.exists(path) == False:
                 with open(path, 'w') as file1:
                     file1.write("service,\
                                 c0_local_routing_weight,\
                                 c1_local_routing_weight,\
-                                c0_ccr,\
-                                c1_ccr,\
+                                c0_cross_cluster_routing_weight,\
+                                c1_cross_cluster_routing_weight,\
                                 c0_capacity,\
                                 c0_millisecond_load,\
                                 c1_capacity,\
@@ -2355,7 +2375,7 @@ class LoadBalancing(Event):
             local_replica = self.dst_service.get_cluster_replica(self.src_replica.cluster_id)
             remote_replica = self.dst_service.get_cluster_replica(other_cluster)
             if simulator.warmup:
-                
+                ####################################################################################
                 ## 1. queueing time gradient based cut
                 # inverse_latency = list()
                 # for repl in self.dst_service.replicas:
@@ -2391,46 +2411,27 @@ class LoadBalancing(Event):
                 #         break
                 #     dst_replica_candidates.append(elem)
                 # dst_replica_candidates = [x[0] for x in dst_replica_candidates]
-                # print("{}, {}".format(self.dst_service.name, len(dst_replica_candidates)))
-                # for elem in inverse_latency:
-                #     print("src,{}, dst_can,{}, pred,{}, gradient,{}, inverse_pred,{}, weight,{}".format(self.src_replica.to_str(), elem[0].to_str(), elem[1], elem[4], elem[2], elem[3]*100))
-                # print()
+                # # print("{}, {}".format(self.dst_service.name, len(dst_replica_candidates)))
+                # # for elem in inverse_latency:
+                # #     print("src,{}, dst_can,{}, pred,{}, gradient,{}, inverse_pred,{}, weight,{}".format(self.src_replica.to_str(), elem[0].to_str(), elem[1], elem[4], elem[2], elem[3]*100))
+                # # print()
+                ####################################################################################
                 
+                ####################################################################################
                 # ## 2. avg/min/max of aggregated queueing time in cluster-wise + weight
-                # agg_metric = "min" # avg, min, max
-                # local_cluster_queueing_metric = self.dst_service.cluster_agg_queue_time(agg_metric, self.src_replica.cluster_id)
-                # remote_cluster_queueing_metric = self.dst_service.cluster_agg_queue_time(agg_metric, other_cluster)
-                # local_agg_pred_latency = local_cluster_queueing_metric \
-                #                         + self.dst_service.processing_time \
-                #                         + network_latency.same_rack*2 ## NOTE: network latency is hardcoded
-                # remote_agg_pred_latency = remote_cluster_queueing_metric \
-                #                         + self.dst_service.processing_time \
-                #                         + network_latency.far_inter_region*2 ## NOTE: network latency is hardcoded
-                # if local_agg_pred_latency < remote_agg_pred_latency:
-                #     dst_replica_candidates = local_replica
-                # else:
-                #     dst_replica_candidates = remote_replica
-                # inverse_latency = list()
-                # for repl in dst_replica_candidates:
-                #     if repl.is_dead == False:
-                #         if len(repl.pred_queue_time) == 0:
-                #             pred_q_t = 1
-                #         else:
-                #             pred_q_t = repl.pred_queue_time[-1]
-                #         if self.src_replica.cluster_id == repl.cluster_id:
-                #             pred_latency = pred_q_t + self.dst_service.processing_time + network_latency.same_rack*2
-                #         else:
-                #             pred_latency = pred_q_t + self.dst_service.processing_time + network_latency.far_inter_region*2
-                #         inverse_latency.append([repl, pred_latency, 1/pred_latency])
-                # sum_of_inverse = sum(x[2] for x in inverse_latency)
-                # for i in range(len(inverse_latency)):
-                #     w_ = inverse_latency[i][2]/sum_of_inverse
-                #     inverse_latency[i].append(w_)
-                # dst_replica_candidates = random.choices([x[0] for x in inverse_latency], weights=[x[3] for x in inverse_latency], k=1)
-                
-                
-                ## 3. no cross-cluster routing. local routing only with queueing based routing 
-                dst_replica_candidates = local_replica
+                agg_metric = "min" # avg, min, max
+                local_cluster_queueing_metric = self.dst_service.cluster_agg_queue_time(agg_metric, self.src_replica.cluster_id)
+                remote_cluster_queueing_metric = self.dst_service.cluster_agg_queue_time(agg_metric, other_cluster)
+                local_agg_pred_latency = local_cluster_queueing_metric \
+                                        + self.dst_service.processing_time \
+                                        + network_latency.same_rack*2 ## NOTE: network latency is hardcoded
+                remote_agg_pred_latency = remote_cluster_queueing_metric \
+                                        + self.dst_service.processing_time \
+                                        + network_latency.far_inter_region*2 ## NOTE: network latency is hardcoded
+                if local_agg_pred_latency < remote_agg_pred_latency:
+                    dst_replica_candidates = local_replica
+                else:
+                    dst_replica_candidates = remote_replica
                 inverse_latency = list()
                 for repl in dst_replica_candidates:
                     if repl.is_dead == False:
@@ -2438,22 +2439,46 @@ class LoadBalancing(Event):
                             pred_q_t = 1
                         else:
                             pred_q_t = repl.pred_queue_time[-1]
-                        pred_latency = pred_q_t + self.dst_service.processing_time + network_latency.same_rack*2
-                        inverse_latency.append([repl, pred_latency, 1/pred_latency, pred_q_t, repl.cur_ewma_intarrtime])
-                inverse_latency.sort(key=lambda x: x[1])
-                # for elem in inverse_latency:
-                #     print("{}, {}, {}, {}, {}".format(elem[0].to_str(), elem[1], elem[2], elem[3], elem[4]))
-                # print("---")
-                # Top 5 local instances by queueing time.
-                num_can = 5
-                if len(inverse_latency) >= num_can:
-                    inverse_latency = inverse_latency[:num_can]
-                    dst_replica_candidates = [x[0] for x in inverse_latency]
-                else:
-                    dst_replica_candidates = [x[0] for x in inverse_latency]
-                # for elem in dst_replica_candidates:
-                #     print("{}".format(elem.to_str()))
-                # print()
+                        if self.src_replica.cluster_id == repl.cluster_id:
+                            pred_latency = pred_q_t + self.dst_service.processing_time + network_latency.same_rack*2
+                        else:
+                            pred_latency = pred_q_t + self.dst_service.processing_time + network_latency.far_inter_region*2
+                        inverse_latency.append([repl, pred_latency, 1/pred_latency])
+                sum_of_inverse = sum(x[2] for x in inverse_latency)
+                for i in range(len(inverse_latency)):
+                    w_ = inverse_latency[i][2]/sum_of_inverse
+                    inverse_latency[i].append(w_)
+                dst_replica_candidates = random.choices([x[0] for x in inverse_latency], weights=[x[3] for x in inverse_latency], k=1)
+                ####################################################################################
+                
+                
+                ####################################################################################
+                ## 3. no cross-cluster routing. local routing only with queueing based routing 
+                # dst_replica_candidates = local_replica
+                # inverse_latency = list()
+                # for repl in dst_replica_candidates:
+                #     if repl.is_dead == False:
+                #         if len(repl.pred_queue_time) == 0:
+                #             pred_q_t = 1
+                #         else:
+                #             pred_q_t = repl.pred_queue_time[-1]
+                #         pred_latency = pred_q_t + self.dst_service.processing_time + network_latency.same_rack*2
+                #         inverse_latency.append([repl, pred_latency, 1/pred_latency, pred_q_t, repl.cur_ewma_intarrtime])
+                # inverse_latency.sort(key=lambda x: x[1])
+                # # for elem in inverse_latency:
+                # #     print("{}, {}, {}, {}, {}".format(elem[0].to_str(), elem[1], elem[2], elem[3], elem[4]))
+                # # print("---")
+                # # Top 5 local instances by queueing time.
+                # num_can = 5
+                # if len(inverse_latency) >= num_can:
+                #     inverse_latency = inverse_latency[:num_can]
+                #     dst_replica_candidates = [x[0] for x in inverse_latency]
+                # else:
+                #     dst_replica_candidates = [x[0] for x in inverse_latency]
+                # # for elem in dst_replica_candidates:
+                # #     print("{}".format(elem.to_str()))
+                # # print()
+                ####################################################################################
                 
                 # sum_of_inverse = sum(x[2] for x in inverse_latency)
                 # for i in range(len(inverse_latency)):
@@ -2470,9 +2495,10 @@ class LoadBalancing(Event):
             local_candidate = self.dst_service.get_cluster_live_replica(self.src_replica.cluster_id)
             remote_candidate = self.dst_service.get_cluster_live_replica(other_cluster)
             
-            if self.dst_service in simulator.routing_weight[self.src_replica.cluster_id]:
+            # routing_weight is local routing weight
+            if self.dst_service in simulator.local_routing_weight[self.src_replica.cluster_id]:
                 ran = random.random()
-                if ran <= simulator.routing_weight[self.src_replica.cluster_id][self.dst_service]:
+                if ran <= simulator.local_routing_weight[self.src_replica.cluster_id][self.dst_service]:
                     superset_candidates = local_candidate
                 else:
                     superset_candidates = remote_candidate
@@ -3382,8 +3408,7 @@ def linear_topology_application(load_balancer="RoundRobin", c0_req_arr=list(), c
     return replica_for_cluster_0["User"][0], replica_for_cluster_1["User"][0], svc_a
 
 # Tree topology application
-def three_depth_application(num_cluster, load_balancer="RoundRobin", c0_req_arr=list(), c1_req_arr=list()):
-    NUM_CLUSTER = num_cluster
+def three_depth_application(load_balancer="RoundRobin", c0_req_arr=list(), c1_req_arr=list()):
     
     user = Service(name_="User", mcore_per_req_=0, processing_t_=0, lb_=load_balancer)
     # user_1 = Service(name_="User1", mcore_per_req_=0, processing_t_=0, lb_=load_balancer)
@@ -3475,8 +3500,9 @@ def three_depth_application(num_cluster, load_balancer="RoundRobin", c0_req_arr=
     for repl in temp_all_replica:
         dag.register_replica(repl)
     dag.check_duplicate_replica()
-    return replica_for_cluster
+    # return replica_for_cluster
     # return replica_for_cluster_0["User"][0], replica_for_cluster_1["User"][0], svc_a
+    return replica_for_cluster[0]["User"][0], replica_for_cluster[1]["User"][0], svc_a
 
 
 def general_tree_application(fan_out_degree=3, no_child_constant=1, depth=3, num_cluster=2, load_balancer="RoundRobin", c0_req_arr=list(), c1_req_arr=list()):
@@ -3887,6 +3913,7 @@ if __name__ == "__main__":
             if svc.name.find("User") == -1:
                 # simulator.load_queueing_function("postprocessed_queuing_function-"+svc.name+".txt", svc)
                 # simulator.load_queueing_function("moving_avg_inter_arrival_time_10_queuing_function-"+svc.name+".txt", svc)
+                # simulator.load_queueing_function("moving_avg_inter_arrival_time_5_queuing_function-"+svc.name+".txt", svc)
                 simulator.load_queueing_function("ewma_inter_arrival_time_queuing_function-"+svc.name+".txt", svc)
             
     simulator.start_simulation()

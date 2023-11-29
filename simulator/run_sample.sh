@@ -3,22 +3,22 @@
 output_dir="log"
 app="three_depth"
 load_balancer="RoundRobin"
-workload="sample-latencyfunc2-test"
+workload="sample-latencyfunc3-test"
 fixed_autoscaler=0
 autoscaler_period=15000
 desired_autoscaler_metric=0.20
+# desired_autoscaler_metric=0.50
 delayed_information=1
 c0_request_arrival_file="request_arrival/sample-request_arrival-cluster0.txt"
 c1_request_arrival_file="request_arrival/sample-request_arrival-cluster1.txt"
 
-#for routing_algorithm in "MCLB"
-#for routing_algorithm in "capacity_TE"
-#for routing_algorithm in "heuristic_TE"
-#for routing_algorithm in "LCLB" "MCLB" "heuristic_TE" "capacity_TE"
-#for routing_algorithm in "LCLB" "MCLB" "heuristic_TE" "capacity_TE"
+# for routing_algorithm in "LCLB" "MCLB" "heuristic_TE" "capacity_TE"
+# for routing_algorithm in "LCLB"
+# for routing_algorithm in "capacity_TE"
 for routing_algorithm in "queueing_prediction"
 do
     start=`date +%s`
+    # python3 simulator_cp.py --app ${app} \
     python3 simulator.py --app ${app} \
                         --c0_request_arrival_file ${c0_request_arrival_file} \
                         --c1_request_arrival_file ${c1_request_arrival_file} \
