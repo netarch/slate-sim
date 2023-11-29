@@ -4,7 +4,8 @@ output_dir="log"
 app="three_depth"
 load_balancer="RoundRobin"
 fixed_autoscaler=0
-autoscaler_period=15
+autoscaler_period=15000
+desired_autoscaler_metric=0.20
 delayed_information=1
 workload="6d9c26b9-delay${delayed_information}-auto${autoscaler_period}"
 c0_request_arrival_file="request_arrival/new_request_arrival_time_clsuter_0-6d9c26b9.txt"
@@ -21,6 +22,7 @@ do
                         --load_balancer ${load_balancer} \
                         --fixed_autoscaler ${fixed_autoscaler} \
                         --autoscaler_period ${autoscaler_period} \
+                        --desired_autoscaler_metric ${desired_autoscaler_metric} \
                         --delayed_information ${delayed_information} \
                         --routing_algorithm ${routing_algorithm} \
                         --output_dir ${output_dir} &
