@@ -1,43 +1,53 @@
 # Simulator for microservice architecture
 
 ## How to use the simulator
-1. ```git clone [this repo]```
-2. run shell script.
-3. You can find result log in output directory.
-    - latency , autoscaling log, request arrival time .
-
-
-the format of the output log directroy name
-[date_time]-[app]-[workload]-[load balancer]-[routing algorithm]
-
-Currently available shell scripts for experiment. (You can write your own script.)
-- `run_high_burst_trace_6d9c26b9.sh`
+1. run shell script.
+2. You can find result log in output directory.
+    - latency
+        - the format of the output log directroy name: `[date_time]-[app]-[workload]-[load balancer]-[routing algorithm]`
+    - autoscaling log
+    - request arrival time only exists in `LCLB` directory
+3. To plot the graph,
+    - resource consumption timeline & normalized resource consumption: `calc_resource_consumption.ipynb`
+    - resource consumption timeline: `plot_latency.sh <workload>`
+        - workload: 6d9c26b9, sample, smallsample
 
 
 ## Example run script
 ```shell
-dir=[path to slate-sim directory]
-app="three_depth" # one_service
-load_balancer="RoundRobin"
-window_size=100
-base_rps=8
-experiment="Alibaba_trace" # Microbenchmark
-workload="6d9c26b9" # exp_burst_4x, exp_burst_8x
-request_arrival_file=${dir}"/request_arrival_time_6d9c26b9_burst_40_high.txt"
-fixed_autoscaler=0
-routing_algorithm="heuristic_TE" # "LCLB", "MCLB"
+#!/bin/bash
 
 output_dir="log"
+app="three_depth"
+load_balancer="RoundRobin"
+fixed_autoscaler=0
+autoscaler_period=15000
+desired_autoscaler_metric=0.20
+delayed_information=1
+workload="6d9c26b9-delay${delayed_information}-auto${autoscaler_period}"
+c0_request_arrival_file="request_arrival/new_request_arrival_time_clsuter_0-6d9c26b9.txt"
+c1_request_arrival_file="request_arrival/new_request_arrival_time_clsuter_1-6d9c26b9.txt"
 
-python3 ${dir}/simulator.py --app ${app} \
-                    --base_rps ${base_rps} \
-                    --experiment ${experiment} \
-                    --request_arrival_file ${request_arrival_file} \
-                    --workload ${workload} \
-                    --load_balancer ${load_balancer} \
-                    --fixed_autoscaler ${fixed_autoscaler} \
-                    --routing_algorithm ${routing_algorithm} \
-                    --output_dir ${output_dir}
+# for routing_algorithm in "LCLB"
+for routing_algorithm in "LCLB" "MCLB" "heuristic_TE"
+do
+    start=`date +%s`
+    python3 simulator.py --app ${app} \
+                        --workload ${workload} \
+                        --c0_request_arrival_file ${c0_request_arrival_file} \
+                        --c1_request_arrival_file ${c1_request_arrival_file} \
+                        --load_balancer ${load_balancer} \
+                        --fixed_autoscaler ${fixed_autoscaler} \
+                        --autoscaler_period ${autoscaler_period} \
+                        --desired_autoscaler_metric ${desired_autoscaler_metric} \
+                        --delayed_information ${delayed_information} \
+                        --routing_algorithm ${routing_algorithm} \
+                        --output_dir ${output_dir} &
+    end=`date +%s`
+    runtime=$((end-start))
+    echo "${routing_algorithm}: ${runtime}s"
+done
+
 ```
 - base_rps: base rps for Microbenchmark experiment
 - experiment: Alibaba_trace or Microbenchmark
@@ -51,6 +61,8 @@ python3 ${dir}/simulator.py --app ${app} \
   - LCLB: Local-cluster load balancing.
   - MCLB: Multi-cluster load balancing.
   - heuristic_TE: current service layer traffice engineering.
+  - capacity_TE
+  - queueing_prediction
 - output_dir: the name of a directory to store logs. If this dir does not exist, it will automatically create this directory.
 
 
